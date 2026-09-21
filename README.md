@@ -145,6 +145,7 @@ perfis, firmware ou qualquer outra configuração do mouse.
 - Tauri 2 + Rust
 - React 19 + TypeScript
 - Tailwind CSS 4
+- shadcn/ui (Radix Nova) + Lucide
 - Bun + Vite
 - Biome
 - `hidapi`

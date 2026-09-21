@@ -5,8 +5,23 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart"
+import { BatteryCharging, Clock3, Palette, Power, RefreshCw, Usb } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
-
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
+import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
 import defaultIcon from "../assets/icon.svg"
 import criticalIcon from "../src-tauri/icons/alternate/critical.svg"
 import galacticIcon from "../src-tauri/icons/alternate/galactic.svg"
@@ -45,8 +60,8 @@ const manualIconStorageKey = "hmbm.manualExecutableIcon"
 const iconOptions: IconOption[] = [
   { value: "Default", label: "Original", image: defaultIcon },
   { value: "Galactic", label: "Galáctico", image: galacticIcon },
-  { value: "Monochrome", label: "Mono", image: monochromeIcon },
-  { value: "Minimalist", label: "Minimal", image: minimalistIcon },
+  { value: "Monochrome", label: "Monocromático", image: monochromeIcon },
+  { value: "Minimalist", label: "Minimalista", image: minimalistIcon },
   { value: "Mythic", label: "Mítico", image: mythicIcon },
 ]
 
@@ -79,26 +94,31 @@ const initialSnapshot: BatterySnapshot = {
   lastSuccessAt: null,
 }
 
-const statusPresentation: Record<BatteryStatus, { label: string; classes: string }> = {
+const statusPresentation: Record<BatteryStatus, { label: string; badge: string; dot: string }> = {
   available: {
     label: "Conectado",
-    classes: "border-emerald-400/20 bg-emerald-400/8 text-emerald-300",
+    badge: "border-emerald-500/25 bg-emerald-500/10 text-emerald-400",
+    dot: "bg-emerald-400",
   },
   sleeping: {
     label: "Dormindo",
-    classes: "border-amber-300/20 bg-amber-300/8 text-amber-200",
+    badge: "border-amber-500/25 bg-amber-500/10 text-amber-300",
+    dot: "bg-amber-400",
   },
   notFound: {
     label: "Ausente",
-    classes: "border-red-300/20 bg-red-300/8 text-red-300",
+    badge: "border-red-500/25 bg-red-500/10 text-red-400",
+    dot: "bg-red-400",
   },
   busy: {
     label: "Ocupado",
-    classes: "border-amber-300/20 bg-amber-300/8 text-amber-200",
+    badge: "border-amber-500/25 bg-amber-500/10 text-amber-300",
+    dot: "bg-amber-400",
   },
   error: {
     label: "Erro",
-    classes: "border-red-300/20 bg-red-300/8 text-red-300",
+    badge: "border-red-500/25 bg-red-500/10 text-red-400",
+    dot: "bg-red-400",
   },
 }
 
@@ -123,7 +143,7 @@ function iconErrorMessage(error: unknown): string {
 
 function AppLogo({ icon }: { icon: ExecutableIcon }) {
   return (
-    <div className="grid size-12 place-items-center overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-[inset_0_1px_rgba(255,255,255,0.06)]">
+    <div className="size-11 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <img
         src={executableIconImages[icon]}
         alt=""
@@ -131,18 +151,6 @@ function AppLogo({ icon }: { icon: ExecutableIcon }) {
         draggable={false}
       />
     </div>
-  )
-}
-
-function RefreshIcon({ spinning }: { spinning: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className={`size-[17px] fill-none stroke-current stroke-2 [stroke-linecap:round] [stroke-linejoin:round] ${spinning ? "animate-spin" : ""}`}
-      aria-hidden="true"
-    >
-      <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6" />
-    </svg>
   )
 }
 
@@ -163,13 +171,12 @@ export function App() {
 
   const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
   const level = shownLevel ?? 0
-  const presentation = statusPresentation[snapshot.status]
   const runningInTauri = isTauri()
 
-  const fillClass = useMemo(() => {
-    if (level <= 20) return "from-red-600 to-red-300 shadow-red-400/25"
-    if (level <= 40) return "from-amber-600 to-amber-300 shadow-amber-400/25"
-    return "from-emerald-600 to-emerald-300 shadow-emerald-400/25"
+  const meterClass = useMemo(() => {
+    if (level <= 20) return "[&_[data-slot=progress-indicator]]:bg-red-500"
+    if (level <= 40) return "[&_[data-slot=progress-indicator]]:bg-amber-400"
+    return "[&_[data-slot=progress-indicator]]:bg-emerald-500"
   }, [level])
 
   const refresh = useCallback(async () => {
@@ -270,152 +277,157 @@ export function App() {
   }, [automaticIcon, manualIcon, runningInTauri, shownLevel])
 
   return (
-    <main className="flex min-h-screen min-w-[360px] flex-col gap-3 overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[22px] text-slate-100">
-      <header className="grid grid-cols-[48px_1fr_auto] items-center gap-[13px]">
+    <main className="flex h-screen min-w-[360px] flex-col gap-3 overflow-hidden bg-background p-5 text-foreground">
+      <header className="flex items-center gap-3 px-0.5 py-0.5">
         <AppLogo icon={activeIcon} />
-        <div>
-          <p className="mb-0.5 text-[10px] font-bold tracking-[0.16em] text-slate-500">
-            HAVIT MS966WB
-          </p>
-          <h1 className="text-[23px] font-bold tracking-[-0.03em]">Battery Monitor</h1>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-base font-semibold tracking-tight">Havit Battery</h1>
+          <p className="truncate text-xs text-muted-foreground">MS966WB · Receptor 2.4 GHz</p>
         </div>
-        <span
-          className={`rounded-full border px-2.5 py-1.5 text-[10px] font-bold tracking-[0.04em] uppercase ${presentation.classes}`}
-        >
-          {presentation.label}
-        </span>
       </header>
 
-      <section
-        className="flex min-h-[205px] flex-col items-center justify-center rounded-3xl border border-white/7 bg-slate-900/75 shadow-[0_18px_55px_rgba(0,0,0,0.22)] backdrop-blur-xl"
-        aria-live="polite"
-      >
-        <div
-          className="relative h-[72px] w-40 rounded-[18px] border-[3px] border-slate-700 p-[7px]"
-          aria-hidden="true"
-        >
-          <div className="absolute top-[21px] -right-3 h-[25px] w-[9px] rounded-r-md bg-slate-700" />
-          <div className="relative size-full overflow-hidden rounded-[10px] bg-slate-950/60">
-            <div
-              className={`h-full rounded-[9px] bg-gradient-to-r shadow-[0_0_28px] transition-[width] duration-500 ease-out ${fillClass} ${snapshot.percentage === null ? "opacity-50 saturate-[0.35]" : ""}`}
-              style={{ width: `${Math.min(100, Math.max(0, level))}%` }}
-            />
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/12 to-transparent to-45%" />
-          </div>
-        </div>
+      <BatteryCard snapshot={snapshot} level={shownLevel} meterClass={meterClass} />
 
-        <div className="mt-3 flex items-start">
-          <span className="text-5xl leading-none font-bold tracking-[-0.06em]">
-            {shownLevel ?? "--"}
-          </span>
-          <span className="mt-1 ml-1 text-xl font-semibold text-slate-500">%</span>
-        </div>
-        <p className="mx-6 mt-2 text-center text-xs leading-relaxed text-slate-400">
-          {snapshot.message}
-        </p>
-      </section>
-
-      <section className="rounded-[18px] border border-white/7 bg-slate-900/75 px-[17px] shadow-[0_18px_55px_rgba(0,0,0,0.18)] backdrop-blur-xl">
-        <Detail label="Conexão" value="Receptor USB 2.4 GHz" />
-        <Detail label="Última tentativa" value={relativeTime(snapshot.updatedAt)} />
-        <SettingRow
-          label="Iniciar com o Windows"
-          description={autostartBusy ? "Atualizando…" : autostartStatus}
-          enabled={autostartEnabled}
-          busy={autostartBusy}
-          onToggle={() => void toggleAutostart()}
-        />
-      </section>
+      <Card size="sm" className="gap-0 py-0 shadow-none">
+        <CardContent className="px-3">
+          <Detail icon={Usb} label="Conexão" value="Receptor USB" />
+          <Separator />
+          <Detail icon={Clock3} label="Última tentativa" value={relativeTime(snapshot.updatedAt)} />
+          <Separator />
+          <SettingRow
+            icon={Power}
+            label="Iniciar com o Windows"
+            description={autostartBusy ? "Atualizando…" : autostartStatus}
+            enabled={autostartEnabled}
+            busy={autostartBusy}
+            onToggle={() => void toggleAutostart()}
+          />
+        </CardContent>
+      </Card>
 
       <IconSettings
         automatic={automaticIcon}
         selected={manualIcon}
         busy={iconBusy}
         status={iconStatus}
-        onAutomaticChange={() => setAutomaticIcon((enabled) => !enabled)}
+        onAutomaticChange={setAutomaticIcon}
         onSelect={setManualIcon}
       />
 
-      <button
+      <Button
         type="button"
+        size="lg"
         disabled={refreshing}
         onClick={() => void refresh()}
-        className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-[14px] border border-emerald-300/25 bg-emerald-500/10 text-[13px] font-semibold text-emerald-200 transition hover:-translate-y-px hover:border-emerald-300/40 hover:bg-emerald-500/15 disabled:cursor-wait disabled:opacity-60"
+        className="h-10 w-full"
       >
-        <RefreshIcon spinning={refreshing} />
-        <span>Atualizar agora</span>
-      </button>
+        <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
+        {refreshing ? "Atualizando…" : "Atualizar agora"}
+      </Button>
 
-      <p className="text-center text-[10px] text-slate-600">
-        Fechar a janela mantém o monitor na bandeja do Windows.
+      <p className="text-center text-[11px] text-muted-foreground/65">
+        Fechar a janela mantém o monitor na bandeja.
       </p>
     </main>
   )
 }
 
-function Detail({ label, value }: { label: string; value: string }) {
+function BatteryCard({
+  snapshot,
+  level,
+  meterClass,
+}: {
+  snapshot: BatterySnapshot
+  level: number | null
+  meterClass: string
+}) {
+  const presentation = statusPresentation[snapshot.status]
+
   return (
-    <div className="flex items-center justify-between border-b border-white/6 py-[11px] text-xs">
-      <span className="text-slate-500">{label}</span>
-      <strong className="font-semibold text-slate-300">{value}</strong>
+    <Card className="gap-0 py-0 shadow-none" aria-live="polite">
+      <CardHeader className="border-b py-3.5">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <BatteryCharging className="size-4 text-muted-foreground" />
+          Nível da bateria
+        </CardTitle>
+        <CardDescription className="text-xs">
+          {snapshot.percentage === null && snapshot.lastKnownPercentage !== null
+            ? "Última leitura conhecida"
+            : "Leitura atual do receptor"}
+        </CardDescription>
+        <CardAction>
+          <Badge variant="outline" className={cn("gap-1.5", presentation.badge)}>
+            <span className={cn("size-1.5 rounded-full", presentation.dot)} />
+            {presentation.label}
+          </Badge>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-4 py-4">
+        <div className="flex items-end justify-between gap-4">
+          <div className="flex items-baseline">
+            <span className="text-5xl leading-none font-semibold tracking-[-0.055em] tabular-nums">
+              {level ?? "—"}
+            </span>
+            <span className="ml-1 text-lg font-medium text-muted-foreground">%</span>
+          </div>
+          <span className="pb-1 text-right text-[11px] text-muted-foreground">
+            {level === null ? "Indisponível" : batteryLabel(level)}
+          </span>
+        </div>
+        <Progress
+          value={level ?? 0}
+          aria-label={level === null ? "Bateria indisponível" : `Bateria em ${level}%`}
+          className={cn("h-2", meterClass, level === null && "opacity-40")}
+        />
+        <p className="min-h-8 text-xs leading-4 text-muted-foreground">{snapshot.message}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function batteryLabel(level: number): string {
+  if (level <= 20) return "Carga crítica"
+  if (level <= 40) return "Carga baixa"
+  return "Carga normal"
+}
+
+type LucideIcon = typeof Usb
+
+function Detail({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return (
+    <div className="flex min-h-11 items-center gap-2.5 py-2 text-xs">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="text-muted-foreground">{label}</span>
+      <strong className="ml-auto font-medium text-foreground">{value}</strong>
     </div>
   )
 }
 
-function Toggle({
-  enabled,
-  disabled = false,
-  label,
-  onToggle,
-}: {
-  enabled: boolean
-  disabled?: boolean
-  label: string
-  onToggle: () => void
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onToggle}
-      className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full border transition disabled:cursor-wait disabled:opacity-50 ${
-        enabled ? "border-emerald-300/35 bg-emerald-500/30" : "border-slate-600 bg-slate-800"
-      }`}
-    >
-      <span
-        className={`absolute top-[3px] left-[3px] size-4 rounded-full bg-slate-100 shadow-sm transition-transform ${
-          enabled ? "translate-x-5" : "translate-x-0"
-        }`}
-      />
-    </button>
-  )
-}
-
 function SettingRow({
+  icon: Icon,
   label,
   description,
   enabled,
   busy,
   onToggle,
 }: {
+  icon: LucideIcon
   label: string
   description: string
   enabled: boolean
   busy: boolean
-  onToggle: () => void
+  onToggle: (checked: boolean) => void
 }) {
   return (
-    <div className="flex min-h-[54px] items-center justify-between gap-3 py-2 text-xs">
-      <div className="min-w-0">
-        <span className="block text-slate-400">{label}</span>
-        <span className="mt-0.5 block truncate text-[10px] text-slate-600" title={description}>
+    <div className="flex min-h-13 items-center gap-2.5 py-2">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <span className="block text-xs text-foreground">{label}</span>
+        <span className="block truncate text-[11px] text-muted-foreground" title={description}>
           {description}
         </span>
       </div>
-      <Toggle enabled={enabled} disabled={busy} label={label} onToggle={onToggle} />
+      <Switch checked={enabled} disabled={busy} aria-label={label} onCheckedChange={onToggle} />
     </div>
   )
 }
@@ -432,53 +444,73 @@ function IconSettings({
   selected: ManualIcon
   busy: boolean
   status: string
-  onAutomaticChange: () => void
+  onAutomaticChange: (checked: boolean) => void
   onSelect: (icon: ManualIcon) => void
 }) {
-  const visibleStatus = busy ? "Aplicando ícone…" : `${status}`
+  const visibleStatus = busy ? "Aplicando ícone…" : status
 
   return (
-    <section className="rounded-[18px] border border-white/7 bg-slate-900/75 p-[14px] shadow-[0_18px_55px_rgba(0,0,0,0.18)] backdrop-blur-xl">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xs font-semibold text-slate-300">Ícone do aplicativo</h2>
-          <p className="mt-0.5 text-[10px] text-slate-600">Acompanhar a faixa da bateria</p>
+    <Card size="sm" className="gap-0 py-0 shadow-none">
+      <CardHeader className="border-b py-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Palette className="size-4 text-muted-foreground" />
+          Ícone do aplicativo
+        </CardTitle>
+        <CardDescription className="text-xs">Acompanhar o nível da bateria</CardDescription>
+        <CardAction>
+          <Switch
+            checked={automatic}
+            disabled={busy}
+            aria-label="Sincronizar o ícone com a bateria"
+            onCheckedChange={onAutomaticChange}
+          />
+        </CardAction>
+      </CardHeader>
+
+      <CardContent className="py-3">
+        <div className={cn("grid grid-cols-5 gap-1.5", automatic && "opacity-45")}>
+          {iconOptions.map((option) => {
+            const active = selected === option.value
+            return (
+              <Tooltip key={option.value}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    aria-label={`Usar ícone ${option.label}`}
+                    aria-pressed={active}
+                    disabled={automatic || busy}
+                    onClick={() => onSelect(option.value)}
+                    className={cn(
+                      "h-auto min-w-0 flex-col gap-1 rounded-lg border border-transparent px-1 py-1.5",
+                      active && "border-primary/35 bg-primary/10 text-primary",
+                    )}
+                  >
+                    <img
+                      src={option.image}
+                      alt=""
+                      className="size-8 rounded-md"
+                      draggable={false}
+                    />
+                    <span className="max-w-full truncate text-[9px] font-normal">
+                      {option.label}
+                    </span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={6}>
+                  {option.label}
+                </TooltipContent>
+              </Tooltip>
+            )
+          })}
         </div>
-        <Toggle
-          enabled={automatic}
-          disabled={busy}
-          label="Sincronizar o ícone com a bateria"
-          onToggle={onAutomaticChange}
-        />
-      </div>
-
-      <div className={`mt-3 grid grid-cols-5 gap-1.5 ${automatic ? "opacity-40" : ""}`}>
-        {iconOptions.map((option) => {
-          const active = selected === option.value
-          return (
-            <button
-              key={option.value}
-              type="button"
-              disabled={automatic || busy}
-              onClick={() => onSelect(option.value)}
-              className={`group flex min-w-0 cursor-pointer flex-col items-center gap-1 rounded-xl border p-1.5 transition disabled:cursor-not-allowed ${
-                active
-                  ? "border-emerald-300/35 bg-emerald-400/8"
-                  : "border-transparent hover:border-white/10 hover:bg-white/3"
-              }`}
-            >
-              <img src={option.image} alt="" className="size-9 rounded-[9px]" />
-              <span className="max-w-full truncate text-[9px] text-slate-500 group-hover:text-slate-300">
-                {option.label}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-
-      <p className="mt-2 truncate text-center text-[10px] text-slate-600" title={visibleStatus}>
-        {visibleStatus}
-      </p>
-    </section>
+        <p
+          className="mt-2 truncate text-center text-[11px] text-muted-foreground"
+          title={visibleStatus}
+        >
+          {visibleStatus}
+        </p>
+      </CardContent>
+    </Card>
   )
 }
