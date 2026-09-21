@@ -8,10 +8,12 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import defaultIcon from "../assets/icon.svg"
+import criticalIcon from "../src-tauri/icons/alternate/critical.svg"
 import galacticIcon from "../src-tauri/icons/alternate/galactic.svg"
 import minimalistIcon from "../src-tauri/icons/alternate/minimalist.svg"
 import monochromeIcon from "../src-tauri/icons/alternate/monochrome.svg"
 import mythicIcon from "../src-tauri/icons/alternate/mythic.svg"
+import warningIcon from "../src-tauri/icons/alternate/warning.svg"
 
 type BatteryStatus = "available" | "sleeping" | "notFound" | "busy" | "error"
 type ManualIcon = "Default" | "Galactic" | "Monochrome" | "Minimalist" | "Mythic"
@@ -56,6 +58,16 @@ const executableIconLabels: Record<ExecutableIcon, string> = {
   Monochrome: "Monocromático",
   Minimalist: "Minimalista",
   Mythic: "Mítico",
+}
+
+const executableIconImages: Record<ExecutableIcon, string> = {
+  Default: defaultIcon,
+  Warning: warningIcon,
+  Critical: criticalIcon,
+  Galactic: galacticIcon,
+  Monochrome: monochromeIcon,
+  Minimalist: minimalistIcon,
+  Mythic: mythicIcon,
 }
 
 const initialSnapshot: BatterySnapshot = {
@@ -109,18 +121,15 @@ function iconErrorMessage(error: unknown): string {
   return "Não foi possível trocar o ícone"
 }
 
-function BatteryLogo() {
+function AppLogo({ icon }: { icon: ExecutableIcon }) {
   return (
-    <div className="grid size-12 place-items-center rounded-2xl border border-emerald-300/20 bg-gradient-to-br from-emerald-900/70 to-slate-900 shadow-[inset_0_1px_rgba(255,255,255,0.06)]">
-      <svg
-        viewBox="0 0 32 32"
-        className="size-6 fill-none stroke-emerald-300 stroke-2 [stroke-linejoin:round]"
-        aria-hidden="true"
-      >
-        <path d="M10 3h12a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H10a6 6 0 0 1-6-6V9a6 6 0 0 1 6-6Z" />
-        <path d="M14 0h4v6h-4z" />
-        <path className="fill-emerald-300 stroke-none" d="m17.4 8-6.2 10h4.4l-1 6 6.2-10h-4.4z" />
-      </svg>
+    <div className="grid size-12 place-items-center overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-[inset_0_1px_rgba(255,255,255,0.06)]">
+      <img
+        src={executableIconImages[icon]}
+        alt=""
+        className="size-full object-cover"
+        draggable={false}
+      />
     </div>
   )
 }
@@ -146,6 +155,7 @@ export function App() {
   const [manualIcon, setManualIcon] = useState<ManualIcon>(savedManualIcon)
   const [iconBusy, setIconBusy] = useState(false)
   const [iconStatus, setIconStatus] = useState("Ícone original")
+  const [activeIcon, setActiveIcon] = useState<ExecutableIcon>(manualIcon)
   const [autostartEnabled, setAutostartEnabled] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState("Consultando o Windows…")
@@ -242,7 +252,10 @@ export function App() {
       variant: manualIcon,
     })
       .then((result) => {
-        if (!disposed) setIconStatus(executableIconLabels[result.icon])
+        if (!disposed) {
+          setActiveIcon(result.icon)
+          setIconStatus(executableIconLabels[result.icon])
+        }
       })
       .catch((error: unknown) => {
         if (!disposed) setIconStatus(iconErrorMessage(error))
@@ -259,7 +272,7 @@ export function App() {
   return (
     <main className="flex min-h-screen min-w-[360px] flex-col gap-3 overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[22px] text-slate-100">
       <header className="grid grid-cols-[48px_1fr_auto] items-center gap-[13px]">
-        <BatteryLogo />
+        <AppLogo icon={activeIcon} />
         <div>
           <p className="mb-0.5 text-[10px] font-bold tracking-[0.16em] text-slate-500">
             HAVIT MS966WB

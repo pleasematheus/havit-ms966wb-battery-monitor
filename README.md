@@ -10,7 +10,8 @@ oficial da Havit, de Python ou de drivers adicionais.
 
 - porcentagem exata no menu e no tooltip do tray;
 - ícone dinâmico com nível e cor da bateria;
-- sincronização opcional da cor do ícone de `hmbm.exe` com a faixa da bateria;
+- sincronização opcional dos ícones do `hmbm.exe`, da janela e da barra de tarefas
+  com a faixa da bateria;
 - escolha manual entre ícones original, galáctico, monocromático, minimalista e mítico;
 - opção para iniciar oculto junto com o Windows;
 - instância única: abrir novamente apenas traz a janela existente para frente;
@@ -92,6 +93,10 @@ selecionado manualmente, com as opções **Original**, **Galáctico**,
 recursos PE do executável, a pasta de instalação precisa permitir escrita. Uma
 janela do Explorer que já estava aberta pode manter o ícone anterior em cache até
 o Explorer ser reiniciado.
+
+Enquanto o aplicativo está aberto, a mesma escolha é aplicada imediatamente ao
+ícone da janela, à barra de tarefas e ao logotipo no cabeçalho, sem depender do
+cache do Explorer.
 
 Modificar o executável altera seu hash e invalida uma eventual assinatura
 Authenticode. Por isso o recurso é desativado por padrão e deve permanecer

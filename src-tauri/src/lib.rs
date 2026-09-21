@@ -10,6 +10,11 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateIconFromResourceEx, DestroyIcon, HICON, ICON_BIG, LR_DEFAULTCOLOR, SendMessageW,
+    WM_SETICON,
+};
 
 alt_icons::include_icons!();
 
@@ -78,12 +83,27 @@ struct TrayItems {
 
 struct ExecutableIconStore {
     update_lock: tokio::sync::Mutex<()>,
+    #[cfg(windows)]
+    taskbar_icon: Mutex<Option<isize>>,
 }
 
 impl ExecutableIconStore {
     fn new() -> Self {
         Self {
             update_lock: tokio::sync::Mutex::new(()),
+            #[cfg(windows)]
+            taskbar_icon: Mutex::new(None),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ExecutableIconStore {
+    fn drop(&mut self) {
+        if let Some(icon) = self.taskbar_icon.get_mut().ok().and_then(Option::take) {
+            unsafe {
+                DestroyIcon(icon as HICON);
+            }
         }
     }
 }
@@ -388,6 +408,115 @@ fn set_executable_icon(desired: AppIcon) -> Result<ExecutableIconResult, String>
     })
 }
 
+#[cfg(windows)]
+fn best_ico_image(icon: AppIcon) -> Result<(&'static [u8], i32, i32), String> {
+    let bytes = alt_icons::Icon::bytes(&icon);
+    if bytes.len() < 6 || u16::from_le_bytes([bytes[2], bytes[3]]) != 1 {
+        return Err("arquivo ICO inválido".into());
+    }
+
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+    if count == 0 || bytes.len() < 6 + count * 16 {
+        return Err("diretório ICO inválido".into());
+    }
+
+    let mut best: Option<(&[u8], i32, i32, u64)> = None;
+    for index in 0..count {
+        let at = 6 + index * 16;
+        let width = if bytes[at] == 0 {
+            256
+        } else {
+            i32::from(bytes[at])
+        };
+        let height = if bytes[at + 1] == 0 {
+            256
+        } else {
+            i32::from(bytes[at + 1])
+        };
+        let bpp = u16::from_le_bytes([bytes[at + 6], bytes[at + 7]]) as u64;
+        let size = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap()) as usize;
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| "entrada ICO inválida".to_string())?;
+        if offset < 6 + count * 16 || end > bytes.len() || size == 0 {
+            return Err("entrada ICO fora dos limites".into());
+        }
+
+        let score = width as u64 * height as u64 * bpp.max(1);
+        if best.as_ref().is_none_or(|entry| score > entry.3) {
+            best = Some((&bytes[offset..end], width, height, score));
+        }
+    }
+
+    best.map(|(data, width, height, _)| (data, width, height))
+        .ok_or_else(|| "o arquivo ICO não contém imagens".into())
+}
+
+#[cfg(windows)]
+fn load_native_icon(desired: AppIcon) -> Result<HICON, String> {
+    let (data, width, height) = best_ico_image(desired)?;
+    let icon = unsafe {
+        CreateIconFromResourceEx(
+            data.as_ptr(),
+            data.len() as u32,
+            1,
+            0x0003_0000,
+            width,
+            height,
+            LR_DEFAULTCOLOR,
+        )
+    };
+    if icon.is_null() {
+        return Err("não foi possível criar o ícone nativo do Windows".into());
+    }
+    Ok(icon)
+}
+
+#[cfg(windows)]
+fn set_taskbar_icon(
+    window: &tauri::WebviewWindow,
+    state: &ExecutableIconStore,
+    desired: AppIcon,
+) -> Result<(), String> {
+    let icon = load_native_icon(desired)?;
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+
+    unsafe {
+        SendMessageW(hwnd.0 as _, WM_SETICON, ICON_BIG as usize, icon as isize);
+    }
+
+    let mut current = state
+        .taskbar_icon
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(previous) = current.replace(icon as isize) {
+        unsafe {
+            DestroyIcon(previous as HICON);
+        }
+    }
+    Ok(())
+}
+
+fn set_runtime_icon(
+    app: &AppHandle,
+    state: &ExecutableIconStore,
+    desired: AppIcon,
+) -> Result<(), String> {
+    let image = Image::from_bytes(alt_icons::Icon::bytes(&desired))
+        .map_err(|error| format!("não foi possível decodificar o ícone: {error}"))?;
+
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .set_icon(image)
+            .map_err(|error| format!("não foi possível atualizar o ícone da janela: {error}"))?;
+        #[cfg(windows)]
+        set_taskbar_icon(&window, state, desired)?;
+    }
+
+    Ok(())
+}
+
 fn apply_executable_icon(
     automatic: bool,
     level: Option<u8>,
@@ -440,15 +569,22 @@ pub fn handle_icon_cli_command() -> Option<i32> {
 
 #[tauri::command]
 async fn set_executable_icon_preference(
+    app: AppHandle,
     state: State<'_, ExecutableIconStore>,
     automatic: bool,
     level: Option<u8>,
     variant: String,
 ) -> Result<ExecutableIconResult, String> {
     let _update_guard = state.update_lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || apply_executable_icon(automatic, level, variant))
-        .await
-        .map_err(|error| error.to_string())?
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        apply_executable_icon(automatic, level, variant)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let desired = icon_from_variant(&result.icon)
+        .ok_or_else(|| format!("variante de ícone desconhecida: {}", result.icon))?;
+    set_runtime_icon(&app, &state, desired)?;
+    Ok(result)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -570,6 +706,28 @@ mod tests {
         assert_eq!(icon_from_variant("minimalist"), Some(AppIcon::Minimalist));
         assert_eq!(icon_from_variant("mythic"), Some(AppIcon::Mythic));
         assert_eq!(icon_from_variant("unknown"), None);
+    }
+
+    #[test]
+    fn executable_icons_can_be_used_by_the_running_window() {
+        for icon in AppIcon::ALL {
+            let image = Image::from_bytes(alt_icons::Icon::bytes(icon))
+                .expect("every embedded .ico should decode as a Tauri image");
+            assert!(image.width() > 0);
+            assert!(image.height() > 0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn executable_icons_can_be_loaded_as_native_windows_icons() {
+        for desired in AppIcon::ALL {
+            let icon = load_native_icon(*desired)
+                .expect("every embedded .ico should create a native Windows icon");
+            unsafe {
+                DestroyIcon(icon);
+            }
+        }
     }
 
     #[test]

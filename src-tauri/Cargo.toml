@@ -22,7 +22,12 @@ tauri-build = { version = "2.6.3", features = [] }
 alt-icons = { path = "../crates/alt-icons" }
 hidapi = "2.6.7"
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2.11.6", features = ["tray-icon"] }
+tauri = { version = "2.11.6", features = ["image-ico", "tray-icon"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-single-instance = "2.4.5"
 tokio = { version = "1", features = ["sync", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_UI_WindowsAndMessaging",
+] }
