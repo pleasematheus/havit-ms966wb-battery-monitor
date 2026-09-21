@@ -10,6 +10,7 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_notification::NotificationExt;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconFromResourceEx, DestroyIcon, HICON, ICON_BIG, LR_DEFAULTCOLOR, SendMessageW,
@@ -28,6 +29,7 @@ const WIRELESS_ROUTE: u8 = 0x02;
 const REPORT_LENGTH: usize = 64;
 const TRAY_ID: &str = "battery-monitor";
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
+const LOW_BATTERY_THRESHOLD: u8 = 20;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +75,43 @@ impl BatteryStore {
         Self {
             snapshot: Mutex::new(BatterySnapshot::initial()),
             refresh_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct LowBatteryAlertState {
+    notified: bool,
+}
+
+impl LowBatteryAlertState {
+    fn observe(&mut self, percentage: Option<u8>) -> bool {
+        match percentage {
+            Some(level) if level <= LOW_BATTERY_THRESHOLD => {
+                if self.notified {
+                    false
+                } else {
+                    self.notified = true;
+                    true
+                }
+            }
+            Some(_) => {
+                self.notified = false;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
+struct LowBatteryNotifier {
+    state: Mutex<LowBatteryAlertState>,
+}
+
+impl LowBatteryNotifier {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(LowBatteryAlertState::default()),
         }
     }
 }
@@ -267,8 +306,35 @@ async fn refresh_and_publish(app: AppHandle) -> BatterySnapshot {
     *store.snapshot.lock().unwrap() = snapshot.clone();
 
     update_tray(&app, &snapshot);
+    notify_low_battery(&app, snapshot.percentage);
     let _ = app.emit("battery-updated", snapshot.clone());
     snapshot
+}
+
+fn notify_low_battery(app: &AppHandle, percentage: Option<u8>) {
+    let notifier = app.state::<LowBatteryNotifier>();
+    let should_notify = notifier
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .observe(percentage);
+
+    if !should_notify {
+        return;
+    }
+
+    let level = percentage.expect("a low-battery alert always has a percentage");
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title("Bateria baixa do Havit MS966WB")
+        .body(format!(
+            "O mouse está com {level}% de carga. Recarregue-o em breve."
+        ))
+        .show()
+    {
+        eprintln!("não foi possível exibir a notificação de bateria baixa: {error}");
+    }
 }
 
 fn tray_label(snapshot: &BatterySnapshot) -> String {
@@ -605,7 +671,9 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
+        .plugin(tauri_plugin_notification::init())
         .manage(BatteryStore::new())
+        .manage(LowBatteryNotifier::new())
         .manage(ExecutableIconStore::new())
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
@@ -696,6 +764,18 @@ mod tests {
         assert_eq!(icon_for_level(40), AppIcon::Warning);
         assert_eq!(icon_for_level(41), AppIcon::Default);
         assert_eq!(icon_for_level(100), AppIcon::Default);
+    }
+
+    #[test]
+    fn low_battery_alert_fires_once_until_the_level_recovers() {
+        let mut state = LowBatteryAlertState::default();
+
+        assert!(!state.observe(None));
+        assert!(state.observe(Some(LOW_BATTERY_THRESHOLD)));
+        assert!(!state.observe(Some(LOW_BATTERY_THRESHOLD - 1)));
+        assert!(!state.observe(None));
+        assert!(!state.observe(Some(LOW_BATTERY_THRESHOLD + 1)));
+        assert!(state.observe(Some(LOW_BATTERY_THRESHOLD)));
     }
 
     #[test]
