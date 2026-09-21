@@ -15,7 +15,7 @@ oficial da Havit, de Python ou de drivers adicionais.
 - escolha manual entre ícones original, galáctico, monocromático, minimalista e mítico;
 - opção para iniciar oculto junto com o Windows;
 - instância única: abrir novamente apenas traz a janela existente para frente;
-- notificação nativa do Windows ao atingir 20% de bateria, sem alertas repetidos;
+- notificação nativa do Windows com limite ajustável entre 5% e 50%, sem alertas repetidos;
 - atualização automática a cada 60 segundos;
 - atualização manual pelo tray ou pela janela;
 - mantém a última leitura quando o mouse entra em suspensão;
@@ -123,9 +123,11 @@ segunda abertura criem dois monitores simultâneos; nesse caso, a janela da
 instância existente é exibida e recebe foco.
 
 O alerta de bateria baixa é enviado pelo monitor em segundo plano quando uma
-leitura atual chega a 20% ou menos. Ele é exibido uma vez por ciclo de carga e só
-é rearmado depois que o nível volta a ficar acima de 20%; leituras antigas mantidas
-durante a suspensão do mouse não geram notificações.
+leitura atual chega ao limite escolhido. O valor padrão é 20% e pode ser ajustado
+entre 5% e 50% pela janela do aplicativo. A preferência é persistida no Windows,
+inclusive para a inicialização oculta. O aviso é exibido uma vez por ciclo de carga
+e só é rearmado depois que o nível volta a ficar acima do limite; leituras antigas
+mantidas durante a suspensão do mouse não geram notificações.
 
 No Windows, notificações nativas são associadas corretamente ao aplicativo
 instalado. Durante o desenvolvimento, o sistema pode exibir o nome e o ícone do

@@ -67,6 +67,14 @@ body {
   height: 100vh;
 }
 
+.app-scroll {
+  scrollbar-width: none;
+}
+
+.app-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 img {
   -webkit-user-drag: none;
 }

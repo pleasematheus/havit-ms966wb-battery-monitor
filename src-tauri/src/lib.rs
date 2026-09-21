@@ -1,6 +1,7 @@
 use hidapi::HidApi;
 use serde::Serialize;
 use std::{
+    fs,
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -29,7 +30,10 @@ const WIRELESS_ROUTE: u8 = 0x02;
 const REPORT_LENGTH: usize = 64;
 const TRAY_ID: &str = "battery-monitor";
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
-const LOW_BATTERY_THRESHOLD: u8 = 20;
+const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
+const MIN_LOW_BATTERY_THRESHOLD: u8 = 5;
+const MAX_LOW_BATTERY_THRESHOLD: u8 = 50;
+const LOW_BATTERY_THRESHOLD_FILE: &str = "low-battery-threshold";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,15 +83,22 @@ impl BatteryStore {
     }
 }
 
-#[derive(Default)]
 struct LowBatteryAlertState {
+    threshold: u8,
     notified: bool,
 }
 
 impl LowBatteryAlertState {
+    fn new(threshold: u8) -> Self {
+        Self {
+            threshold,
+            notified: false,
+        }
+    }
+
     fn observe(&mut self, percentage: Option<u8>) -> bool {
         match percentage {
-            Some(level) if level <= LOW_BATTERY_THRESHOLD => {
+            Some(level) if level <= self.threshold => {
                 if self.notified {
                     false
                 } else {
@@ -102,6 +113,17 @@ impl LowBatteryAlertState {
             None => false,
         }
     }
+
+    fn settings(&self) -> LowBatterySettings {
+        LowBatterySettings {
+            threshold: self.threshold,
+        }
+    }
+
+    fn set_threshold(&mut self, threshold: u8) {
+        self.threshold = threshold;
+        self.notified = false;
+    }
 }
 
 struct LowBatteryNotifier {
@@ -109,11 +131,17 @@ struct LowBatteryNotifier {
 }
 
 impl LowBatteryNotifier {
-    fn new() -> Self {
+    fn new(threshold: u8) -> Self {
         Self {
-            state: Mutex::new(LowBatteryAlertState::default()),
+            state: Mutex::new(LowBatteryAlertState::new(threshold)),
         }
     }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LowBatterySettings {
+    threshold: u8,
 }
 
 struct TrayItems {
@@ -167,6 +195,52 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn valid_low_battery_threshold(threshold: u8) -> bool {
+    (MIN_LOW_BATTERY_THRESHOLD..=MAX_LOW_BATTERY_THRESHOLD).contains(&threshold)
+}
+
+fn low_battery_threshold_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|directory| directory.join(LOW_BATTERY_THRESHOLD_FILE))
+        .map_err(|error| format!("não foi possível localizar as configurações: {error}"))
+}
+
+fn load_low_battery_threshold(app: &AppHandle) -> u8 {
+    let path = match low_battery_threshold_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            return DEFAULT_LOW_BATTERY_THRESHOLD;
+        }
+    };
+
+    match fs::read_to_string(path) {
+        Ok(value) => value
+            .trim()
+            .parse()
+            .ok()
+            .filter(|threshold| valid_low_battery_threshold(*threshold))
+            .unwrap_or(DEFAULT_LOW_BATTERY_THRESHOLD),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_LOW_BATTERY_THRESHOLD,
+        Err(error) => {
+            eprintln!("não foi possível carregar o limite de bateria baixa: {error}");
+            DEFAULT_LOW_BATTERY_THRESHOLD
+        }
+    }
+}
+
+fn save_low_battery_threshold(app: &AppHandle, threshold: u8) -> Result<(), String> {
+    let path = low_battery_threshold_path(app)?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| "caminho de configurações inválido".to_string())?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("não foi possível criar a pasta de configurações: {error}"))?;
+    fs::write(path, threshold.to_string())
+        .map_err(|error| format!("não foi possível salvar o limite de bateria baixa: {error}"))
 }
 
 fn make_read_request() -> [u8; REPORT_LENGTH] {
@@ -437,6 +511,46 @@ async fn refresh_battery(app: AppHandle) -> BatterySnapshot {
     refresh_and_publish(app).await
 }
 
+#[tauri::command]
+fn get_low_battery_settings(state: State<'_, LowBatteryNotifier>) -> LowBatterySettings {
+    state
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .settings()
+}
+
+#[tauri::command]
+fn set_low_battery_threshold(
+    app: AppHandle,
+    state: State<'_, LowBatteryNotifier>,
+    threshold: u8,
+) -> Result<LowBatterySettings, String> {
+    if !valid_low_battery_threshold(threshold) {
+        return Err(format!(
+            "o limite deve ficar entre {MIN_LOW_BATTERY_THRESHOLD}% e {MAX_LOW_BATTERY_THRESHOLD}%"
+        ));
+    }
+
+    save_low_battery_threshold(&app, threshold)?;
+    let settings = {
+        let mut alert = state
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        alert.set_threshold(threshold);
+        alert.settings()
+    };
+    let percentage = app
+        .state::<BatteryStore>()
+        .snapshot
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .percentage;
+    notify_low_battery(&app, percentage);
+    Ok(settings)
+}
+
 fn icon_for_level(level: u8) -> AppIcon {
     match level {
         0..=20 => AppIcon::Critical,
@@ -673,14 +787,18 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .manage(BatteryStore::new())
-        .manage(LowBatteryNotifier::new())
         .manage(ExecutableIconStore::new())
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
             refresh_battery,
+            get_low_battery_settings,
+            set_low_battery_threshold,
             set_executable_icon_preference
         ])
         .setup(move |app| {
+            let threshold = load_low_battery_threshold(app.handle());
+            app.manage(LowBatteryNotifier::new(threshold));
+
             let status = MenuItem::with_id(
                 app,
                 "battery-status",
@@ -768,14 +886,29 @@ mod tests {
 
     #[test]
     fn low_battery_alert_fires_once_until_the_level_recovers() {
-        let mut state = LowBatteryAlertState::default();
+        let mut state = LowBatteryAlertState::new(DEFAULT_LOW_BATTERY_THRESHOLD);
 
         assert!(!state.observe(None));
-        assert!(state.observe(Some(LOW_BATTERY_THRESHOLD)));
-        assert!(!state.observe(Some(LOW_BATTERY_THRESHOLD - 1)));
+        assert!(state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD)));
+        assert!(!state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD - 1)));
         assert!(!state.observe(None));
-        assert!(!state.observe(Some(LOW_BATTERY_THRESHOLD + 1)));
-        assert!(state.observe(Some(LOW_BATTERY_THRESHOLD)));
+        assert!(!state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD + 1)));
+        assert!(state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD)));
+    }
+
+    #[test]
+    fn low_battery_alert_uses_the_configured_threshold() {
+        let mut state = LowBatteryAlertState::new(35);
+
+        assert!(!state.observe(Some(36)));
+        assert!(state.observe(Some(35)));
+        state.set_threshold(10);
+        assert!(!state.observe(Some(11)));
+        assert!(state.observe(Some(10)));
+        assert!(valid_low_battery_threshold(MIN_LOW_BATTERY_THRESHOLD));
+        assert!(valid_low_battery_threshold(MAX_LOW_BATTERY_THRESHOLD));
+        assert!(!valid_low_battery_threshold(MIN_LOW_BATTERY_THRESHOLD - 1));
+        assert!(!valid_low_battery_threshold(MAX_LOW_BATTERY_THRESHOLD + 1));
     }
 
     #[test]

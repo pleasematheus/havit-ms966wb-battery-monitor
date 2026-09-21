@@ -5,7 +5,17 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart"
-import { BatteryCharging, Clock3, Palette, Power, RefreshCw, Usb } from "lucide-react"
+import {
+  BatteryCharging,
+  BellRing,
+  Clock3,
+  Minus,
+  Palette,
+  Plus,
+  Power,
+  RefreshCw,
+  Usb,
+} from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -48,6 +58,10 @@ interface ExecutableIconResult {
   changed: boolean
 }
 
+interface LowBatterySettings {
+  threshold: number
+}
+
 interface IconOption {
   value: ManualIcon
   label: string
@@ -56,6 +70,10 @@ interface IconOption {
 
 const automaticIconStorageKey = "hmbm.syncExecutableIcon"
 const manualIconStorageKey = "hmbm.manualExecutableIcon"
+const defaultNotificationThreshold = 20
+const minNotificationThreshold = 5
+const maxNotificationThreshold = 50
+const notificationThresholdStep = 5
 
 const iconOptions: IconOption[] = [
   { value: "Default", label: "Original", image: defaultIcon },
@@ -167,6 +185,9 @@ export function App() {
   const [autostartEnabled, setAutostartEnabled] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState("Consultando o Windows…")
+  const [notificationThreshold, setNotificationThreshold] = useState(defaultNotificationThreshold)
+  const [notificationBusy, setNotificationBusy] = useState(false)
+  const [notificationStatus, setNotificationStatus] = useState("Consultando o limite…")
   const [, setClock] = useState(0)
 
   const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
@@ -205,6 +226,25 @@ export function App() {
     }
   }, [autostartBusy, autostartEnabled, runningInTauri])
 
+  const updateNotificationThreshold = useCallback(
+    async (threshold: number) => {
+      if (!runningInTauri || notificationBusy) return
+      setNotificationBusy(true)
+      try {
+        const settings = await invoke<LowBatterySettings>("set_low_battery_threshold", {
+          threshold,
+        })
+        setNotificationThreshold(settings.threshold)
+        setNotificationStatus(`Notificar em ${settings.threshold}% ou menos`)
+      } catch {
+        setNotificationStatus("Não foi possível salvar o limite")
+      } finally {
+        setNotificationBusy(false)
+      }
+    },
+    [notificationBusy, runningInTauri],
+  )
+
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
@@ -229,6 +269,16 @@ export function App() {
         })
         .catch(() => {
           if (!disposed) setAutostartStatus("Estado indisponível")
+        })
+
+      void invoke<LowBatterySettings>("get_low_battery_settings")
+        .then((settings) => {
+          if (disposed) return
+          setNotificationThreshold(settings.threshold)
+          setNotificationStatus(`Notificar em ${settings.threshold}% ou menos`)
+        })
+        .catch(() => {
+          if (!disposed) setNotificationStatus("Limite indisponível")
         })
     }
     void refresh()
@@ -277,7 +327,7 @@ export function App() {
   }, [automaticIcon, manualIcon, runningInTauri, shownLevel])
 
   return (
-    <main className="flex h-screen min-w-[360px] flex-col gap-3 overflow-hidden bg-background p-5 text-foreground">
+    <main className="app-scroll flex h-screen min-w-[360px] flex-col gap-3 overflow-y-auto bg-background p-5 text-foreground">
       <header className="flex items-center gap-3 px-0.5 py-0.5">
         <AppLogo icon={activeIcon} />
         <div className="min-w-0 flex-1">
@@ -301,6 +351,13 @@ export function App() {
             enabled={autostartEnabled}
             busy={autostartBusy}
             onToggle={() => void toggleAutostart()}
+          />
+          <Separator />
+          <ThresholdSettingRow
+            threshold={notificationThreshold}
+            description={notificationBusy ? "Salvando…" : notificationStatus}
+            busy={notificationBusy}
+            onChange={(threshold) => void updateNotificationThreshold(threshold)}
           />
         </CardContent>
       </Card>
@@ -428,6 +485,58 @@ function SettingRow({
         </span>
       </div>
       <Switch checked={enabled} disabled={busy} aria-label={label} onCheckedChange={onToggle} />
+    </div>
+  )
+}
+
+function ThresholdSettingRow({
+  threshold,
+  description,
+  busy,
+  onChange,
+}: {
+  threshold: number
+  description: string
+  busy: boolean
+  onChange: (threshold: number) => void
+}) {
+  return (
+    <div className="flex min-h-13 items-center gap-2.5 py-2">
+      <BellRing className="size-3.5 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <span className="block text-xs text-foreground">Alerta de bateria baixa</span>
+        <span className="block truncate text-[11px] text-muted-foreground" title={description}>
+          {description}
+        </span>
+      </div>
+      <fieldset
+        className="m-0 flex shrink-0 items-center gap-1 border-0 p-0"
+        aria-label="Limite do alerta"
+      >
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-xs"
+          disabled={busy || threshold <= minNotificationThreshold}
+          aria-label="Diminuir limite do alerta"
+          onClick={() => onChange(threshold - notificationThresholdStep)}
+        >
+          <Minus />
+        </Button>
+        <output className="min-w-9 text-center text-xs font-medium tabular-nums">
+          {threshold}%
+        </output>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-xs"
+          disabled={busy || threshold >= maxNotificationThreshold}
+          aria-label="Aumentar limite do alerta"
+          onClick={() => onChange(threshold + notificationThresholdStep)}
+        >
+          <Plus />
+        </Button>
+      </fieldset>
     </div>
   )
 }
