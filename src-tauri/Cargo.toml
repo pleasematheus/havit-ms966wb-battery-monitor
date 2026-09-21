@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Windows battery monitor for the Havit MS966WB wireless mouse"
 edition = "2024"
 license = "MIT"
+autobins = false
+
+[[bin]]
+name = "hmbm"
+path = "src/main.rs"
 
 [lib]
 name = "havit_ms966wb_battery_monitor_lib"

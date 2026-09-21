@@ -1,16 +1,16 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import { listen } from "@tauri-apps/api/event"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
-type BatteryStatus = "available" | "sleeping" | "notFound" | "busy" | "error";
+type BatteryStatus = "available" | "sleeping" | "notFound" | "busy" | "error"
 
 export interface BatterySnapshot {
-  percentage: number | null;
-  lastKnownPercentage: number | null;
-  status: BatteryStatus;
-  message: string;
-  updatedAt: number;
-  lastSuccessAt: number | null;
+  percentage: number | null
+  lastKnownPercentage: number | null
+  status: BatteryStatus
+  message: string
+  updatedAt: number
+  lastSuccessAt: number | null
 }
 
 const initialSnapshot: BatterySnapshot = {
@@ -20,7 +20,7 @@ const initialSnapshot: BatterySnapshot = {
   message: "Consultando o receptor USB…",
   updatedAt: Date.now(),
   lastSuccessAt: null,
-};
+}
 
 const statusPresentation: Record<BatteryStatus, { label: string; classes: string }> = {
   available: {
@@ -43,13 +43,13 @@ const statusPresentation: Record<BatteryStatus, { label: string; classes: string
     label: "Erro",
     classes: "border-red-300/20 bg-red-300/8 text-red-300",
   },
-};
+}
 
 function relativeTime(timestamp: number): string {
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  if (elapsed < 10_000) return "Agora";
-  if (elapsed < 60_000) return `Há ${Math.floor(elapsed / 1000)} s`;
-  return `Há ${Math.floor(elapsed / 60_000)} min`;
+  const elapsed = Math.max(0, Date.now() - timestamp)
+  if (elapsed < 10_000) return "Agora"
+  if (elapsed < 60_000) return `Há ${Math.floor(elapsed / 1000)} s`
+  return `Há ${Math.floor(elapsed / 60_000)} min`
 }
 
 function BatteryLogo() {
@@ -65,7 +65,7 @@ function BatteryLogo() {
         <path className="fill-emerald-300 stroke-none" d="m17.4 8-6.2 10h4.4l-1 6 6.2-10h-4.4z" />
       </svg>
     </div>
-  );
+  )
 }
 
 function RefreshIcon({ spinning }: { spinning: boolean }) {
@@ -77,60 +77,60 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
     >
       <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6" />
     </svg>
-  );
+  )
 }
 
 export function App() {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
-  const [refreshing, setRefreshing] = useState(false);
-  const [, setClock] = useState(0);
+  const [snapshot, setSnapshot] = useState(initialSnapshot)
+  const [refreshing, setRefreshing] = useState(false)
+  const [, setClock] = useState(0)
 
-  const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage;
-  const level = shownLevel ?? 0;
-  const presentation = statusPresentation[snapshot.status];
-  const runningInTauri = isTauri();
+  const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
+  const level = shownLevel ?? 0
+  const presentation = statusPresentation[snapshot.status]
+  const runningInTauri = isTauri()
 
   const fillClass = useMemo(() => {
-    if (level <= 20) return "from-red-600 to-red-300 shadow-red-400/25";
-    if (level <= 40) return "from-amber-600 to-amber-300 shadow-amber-400/25";
-    return "from-emerald-600 to-emerald-300 shadow-emerald-400/25";
-  }, [level]);
+    if (level <= 20) return "from-red-600 to-red-300 shadow-red-400/25"
+    if (level <= 40) return "from-amber-600 to-amber-300 shadow-amber-400/25"
+    return "from-emerald-600 to-emerald-300 shadow-emerald-400/25"
+  }, [level])
 
   const refresh = useCallback(async () => {
-    if (!isTauri()) return;
-    setRefreshing(true);
+    if (!isTauri()) return
+    setRefreshing(true)
     try {
-      setSnapshot(await invoke<BatterySnapshot>("refresh_battery"));
+      setSnapshot(await invoke<BatterySnapshot>("refresh_battery"))
     } finally {
-      setRefreshing(false);
+      setRefreshing(false)
     }
-  }, []);
+  }, [])
 
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
+    let disposed = false
+    let unlisten: (() => void) | undefined
 
     if (runningInTauri) {
       void listen<BatterySnapshot>("battery-updated", ({ payload }) => {
-        if (!disposed) setSnapshot(payload);
+        if (!disposed) setSnapshot(payload)
       }).then((stop) => {
-        if (disposed) stop();
-        else unlisten = stop;
-      });
+        if (disposed) stop()
+        else unlisten = stop
+      })
 
       void invoke<BatterySnapshot>("get_cached_battery").then((cached) => {
-        if (!disposed) setSnapshot(cached);
-      });
+        if (!disposed) setSnapshot(cached)
+      })
     }
-    void refresh();
+    void refresh()
 
-    const timer = window.setInterval(() => setClock((value) => value + 1), 5_000);
+    const timer = window.setInterval(() => setClock((value) => value + 1), 5_000)
     return () => {
-      disposed = true;
-      unlisten?.();
-      window.clearInterval(timer);
-    };
-  }, [refresh, runningInTauri]);
+      disposed = true
+      unlisten?.()
+      window.clearInterval(timer)
+    }
+  }, [refresh, runningInTauri])
 
   return (
     <main className="flex min-h-screen min-w-[360px] flex-col gap-[18px] overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[26px] text-slate-100">
@@ -153,7 +153,10 @@ export function App() {
         className="flex min-h-[218px] flex-col items-center justify-center rounded-3xl border border-white/7 bg-slate-900/75 shadow-[0_18px_55px_rgba(0,0,0,0.22)] backdrop-blur-xl"
         aria-live="polite"
       >
-        <div className="relative h-[76px] w-44 rounded-[18px] border-[3px] border-slate-700 p-[7px]" aria-hidden="true">
+        <div
+          className="relative h-[76px] w-44 rounded-[18px] border-[3px] border-slate-700 p-[7px]"
+          aria-hidden="true"
+        >
           <div className="absolute top-[23px] -right-3 h-[25px] w-[9px] rounded-r-md bg-slate-700" />
           <div className="relative size-full overflow-hidden rounded-[10px] bg-slate-950/60">
             <div
@@ -195,14 +198,16 @@ export function App() {
         Fechar a janela mantém o monitor na bandeja do Windows.
       </p>
     </main>
-  );
+  )
 }
 
 function Detail({ label, value, last = false }: { label: string; value: string; last?: boolean }) {
   return (
-    <div className={`flex items-center justify-between py-[13px] text-xs ${last ? "" : "border-b border-white/6"}`}>
+    <div
+      className={`flex items-center justify-between py-[13px] text-xs ${last ? "" : "border-b border-white/6"}`}
+    >
       <span className="text-slate-500">{label}</span>
       <strong className="font-semibold text-slate-300">{value}</strong>
     </div>
-  );
+  )
 }

@@ -43,9 +43,13 @@ bun run dev
 Verificações locais:
 
 ```powershell
+bun run check
 bun run typecheck
 cargo test --manifest-path .\src-tauri\Cargo.toml
 ```
+
+O frontend usa o Biome para lint, formatação e organização de imports. Para
+aplicar as correções automaticamente, execute `bun run check:fix`.
 
 O teste de hardware é ignorado por padrão. Com o receptor conectado e o mouse
 acordado, ele pode ser executado explicitamente:
@@ -64,6 +68,9 @@ Os artefatos são produzidos em:
 
 - `src-tauri/target/release/bundle/nsis/`
 - `src-tauri/target/release/bundle/msi/`
+
+O executável instalado se chama `hmbm.exe`; o nome exibido para o usuário e
+nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
 O workflow `build-windows.yml` executa as mesmas validações e publica os
 instaladores como artefato de cada execução no GitHub Actions.
@@ -90,6 +97,7 @@ perfis, firmware ou qualquer outra configuração do mouse.
 - React 19 + TypeScript
 - Tailwind CSS 4
 - Bun + Vite
+- Biome
 - `hidapi`
 
 ## Aviso
@@ -100,4 +108,3 @@ e MS966WB são marcas ou identificações de seus respectivos proprietários.
 ## Licença
 
 [MIT](LICENSE)
-
