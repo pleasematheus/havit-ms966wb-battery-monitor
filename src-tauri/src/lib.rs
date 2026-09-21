@@ -359,6 +359,19 @@ fn icon_for_level(level: u8) -> AppIcon {
     }
 }
 
+fn icon_from_variant(variant: &str) -> Option<AppIcon> {
+    match variant.to_ascii_lowercase().as_str() {
+        "default" | "green" => Some(AppIcon::Default),
+        "warning" | "yellow" => Some(AppIcon::Warning),
+        "critical" | "red" => Some(AppIcon::Critical),
+        "galactic" => Some(AppIcon::Galactic),
+        "monochrome" => Some(AppIcon::Monochrome),
+        "minimalist" => Some(AppIcon::Minimalist),
+        "mythic" => Some(AppIcon::Mythic),
+        _ => None,
+    }
+}
+
 fn set_executable_icon(desired: AppIcon) -> Result<ExecutableIconResult, String> {
     let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
     let desired_name = alt_icons::Icon::name(&desired);
@@ -375,9 +388,14 @@ fn set_executable_icon(desired: AppIcon) -> Result<ExecutableIconResult, String>
     })
 }
 
-fn apply_executable_icon(enabled: bool, level: Option<u8>) -> Result<ExecutableIconResult, String> {
-    let desired = match (enabled, level) {
-        (false, _) => AppIcon::Default,
+fn apply_executable_icon(
+    automatic: bool,
+    level: Option<u8>,
+    variant: String,
+) -> Result<ExecutableIconResult, String> {
+    let desired = match (automatic, level) {
+        (false, _) => icon_from_variant(&variant)
+            .ok_or_else(|| format!("variante de ícone desconhecida: {variant}"))?,
         (true, Some(level)) => icon_for_level(level),
         (true, None) => {
             let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
@@ -398,13 +416,13 @@ pub fn handle_icon_cli_command() -> Option<i32> {
         return None;
     }
 
-    let requested = arguments.next();
-    let icon = match requested.as_deref().map(str::to_ascii_lowercase).as_deref() {
-        Some("default" | "green") => AppIcon::Default,
-        Some("warning" | "yellow") => AppIcon::Warning,
-        Some("critical" | "red") => AppIcon::Critical,
-        _ => {
-            eprintln!("uso: hmbm.exe --set-icon <default|warning|critical>");
+    let requested = arguments.next().unwrap_or_default();
+    let icon = match icon_from_variant(&requested) {
+        Some(icon) => icon,
+        None => {
+            eprintln!(
+                "uso: hmbm.exe --set-icon <default|warning|critical|galactic|monochrome|minimalist|mythic>"
+            );
             return Some(2);
         }
     };
@@ -421,13 +439,14 @@ pub fn handle_icon_cli_command() -> Option<i32> {
 }
 
 #[tauri::command]
-async fn sync_executable_icon(
+async fn set_executable_icon_preference(
     state: State<'_, ExecutableIconStore>,
-    enabled: bool,
+    automatic: bool,
     level: Option<u8>,
+    variant: String,
 ) -> Result<ExecutableIconResult, String> {
     let _update_guard = state.update_lock.lock().await;
-    tauri::async_runtime::spawn_blocking(move || apply_executable_icon(enabled, level))
+    tauri::async_runtime::spawn_blocking(move || apply_executable_icon(automatic, level, variant))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -438,15 +457,26 @@ pub fn run() {
         eprintln!("não foi possível limpar uma troca anterior de ícone: {error}");
     }
 
+    let start_hidden = std::env::args().any(|argument| argument == "--autostart");
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _arguments, _cwd| {
+                show_main_window(app);
+            },
+        ))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(BatteryStore::new())
         .manage(ExecutableIconStore::new())
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
             refresh_battery,
-            sync_executable_icon
+            set_executable_icon_preference
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let status = MenuItem::with_id(
                 app,
                 "battery-status",
@@ -492,6 +522,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            if start_hidden && let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -529,11 +563,21 @@ mod tests {
     }
 
     #[test]
+    fn executable_icon_variants_are_resolved_by_name() {
+        assert_eq!(icon_from_variant("default"), Some(AppIcon::Default));
+        assert_eq!(icon_from_variant("galactic"), Some(AppIcon::Galactic));
+        assert_eq!(icon_from_variant("monochrome"), Some(AppIcon::Monochrome));
+        assert_eq!(icon_from_variant("minimalist"), Some(AppIcon::Minimalist));
+        assert_eq!(icon_from_variant("mythic"), Some(AppIcon::Mythic));
+        assert_eq!(icon_from_variant("unknown"), None);
+    }
+
+    #[test]
     #[ignore = "rewrites this test executable's Windows icon"]
     fn swaps_executable_icon_and_restores_the_default() {
         alt_icons::init().expect("leftovers from an earlier icon swap should be cleaned");
 
-        let warning = apply_executable_icon(true, Some(30))
+        let warning = apply_executable_icon(true, Some(30), "default".into())
             .expect("the warning icon should be applied to the test executable");
         assert_eq!(warning.icon, "Warning");
         assert_eq!(
@@ -541,7 +585,22 @@ mod tests {
             Some("Warning".into())
         );
 
-        let default = apply_executable_icon(false, None)
+        for (variant, expected) in [
+            ("galactic", "Galactic"),
+            ("monochrome", "Monochrome"),
+            ("minimalist", "Minimalist"),
+            ("mythic", "Mythic"),
+        ] {
+            let applied = apply_executable_icon(false, None, variant.into())
+                .expect("the manual icon should be applied to the test executable");
+            assert_eq!(applied.icon, expected);
+            assert_eq!(
+                alt_icons::current_icon().expect("the manual icon should be readable"),
+                Some(expected.into())
+            );
+        }
+
+        let default = apply_executable_icon(false, None, "default".into())
             .expect("the default icon should be restored on the test executable");
         assert_eq!(default.icon, "Default");
         assert_eq!(

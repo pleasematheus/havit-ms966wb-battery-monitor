@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="fill-rule:evenodd;clip-rule:evenodd">
+  <defs>
+    <radialGradient id="background" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 232) scale(340)">
+      <stop stop-color="#214a3c" />
+      <stop offset="1" stop-color="#081512" />
+    </radialGradient>
+    <linearGradient id="gold" x1="160" y1="80" x2="360" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff0a8" />
+      <stop offset="0.48" stop-color="#d9a441" />
+      <stop offset="1" stop-color="#8f5f1f" />
+    </linearGradient>
+  </defs>
+  <path d="M396 0c64.022 0 116 51.978 116 116v280c0 64.022-51.978 116-116 116H116C51.978 512 0 460.022 0 396V116C0 51.978 51.978 0 116 0h280Z" fill="url(#background)" />
+  <circle cx="256" cy="270" r="186" fill="none" stroke="#d9a441" stroke-width="5" opacity="0.25" />
+  <path d="m84 256 14-7 7-14 7 14 14 7-14 7-7 14-7-14-14-7Zm302-151 11-5 5-11 5 11 11 5-11 5-5 11-5-11-11-5Z" fill="#ffe8a3" opacity="0.8" />
+  <g transform="translate(10 -16.976)">
+    <path d="M311 123c41.946 0 76 34.054 76 76v140c0 41.946-34.054 76-76 76H181c-41.946 0-76-34.054-76-76V199c0-41.946 34.054-76 76-76h130Z" fill="#0b1e19" fill-opacity="0.84" stroke="url(#gold)" stroke-width="28" />
+  </g>
+  <g transform="translate(0 -30.52)"><path d="M209 76h94v74h-94z" fill="url(#gold)" /></g>
+  <g transform="translate(0 -22)"><path d="m278 155-105 157h77l-16 89 105-157h-77l16-89Z" fill="url(#gold)" /></g>
+</svg>

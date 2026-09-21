@@ -23,4 +23,6 @@ alt-icons = { path = "../crates/alt-icons" }
 hidapi = "2.6.7"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11.6", features = ["tray-icon"] }
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-single-instance = "2.4.5"
 tokio = { version = "1", features = ["sync", "time"] }

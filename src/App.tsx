@@ -1,8 +1,21 @@
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+import defaultIcon from "../assets/icon.svg"
+import galacticIcon from "../src-tauri/icons/alternate/galactic.svg"
+import minimalistIcon from "../src-tauri/icons/alternate/minimalist.svg"
+import monochromeIcon from "../src-tauri/icons/alternate/monochrome.svg"
+import mythicIcon from "../src-tauri/icons/alternate/mythic.svg"
+
 type BatteryStatus = "available" | "sleeping" | "notFound" | "busy" | "error"
+type ManualIcon = "Default" | "Galactic" | "Monochrome" | "Minimalist" | "Mythic"
+type ExecutableIcon = ManualIcon | "Warning" | "Critical"
 
 export interface BatterySnapshot {
   percentage: number | null
@@ -14,16 +27,35 @@ export interface BatterySnapshot {
 }
 
 interface ExecutableIconResult {
-  icon: "Default" | "Warning" | "Critical"
+  icon: ExecutableIcon
   changed: boolean
 }
 
-const executableIconStorageKey = "hmbm.syncExecutableIcon"
+interface IconOption {
+  value: ManualIcon
+  label: string
+  image: string
+}
 
-const executableIconLabels: Record<ExecutableIconResult["icon"], string> = {
-  Default: "Verde · carga normal",
+const automaticIconStorageKey = "hmbm.syncExecutableIcon"
+const manualIconStorageKey = "hmbm.manualExecutableIcon"
+
+const iconOptions: IconOption[] = [
+  { value: "Default", label: "Original", image: defaultIcon },
+  { value: "Galactic", label: "Galáctico", image: galacticIcon },
+  { value: "Monochrome", label: "Mono", image: monochromeIcon },
+  { value: "Minimalist", label: "Minimal", image: minimalistIcon },
+  { value: "Mythic", label: "Mítico", image: mythicIcon },
+]
+
+const executableIconLabels: Record<ExecutableIcon, string> = {
+  Default: "Original verde",
   Warning: "Amarelo · carga baixa",
   Critical: "Vermelho · carga crítica",
+  Galactic: "Galáctico",
+  Monochrome: "Monocromático",
+  Minimalist: "Minimalista",
+  Mythic: "Mítico",
 }
 
 const initialSnapshot: BatterySnapshot = {
@@ -56,6 +88,11 @@ const statusPresentation: Record<BatteryStatus, { label: string; classes: string
     label: "Erro",
     classes: "border-red-300/20 bg-red-300/8 text-red-300",
   },
+}
+
+function savedManualIcon(): ManualIcon {
+  const saved = window.localStorage.getItem(manualIconStorageKey)
+  return iconOptions.some((option) => option.value === saved) ? (saved as ManualIcon) : "Default"
 }
 
 function relativeTime(timestamp: number): string {
@@ -103,11 +140,15 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
 export function App() {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
   const [refreshing, setRefreshing] = useState(false)
-  const [syncExecutableIcon, setSyncExecutableIcon] = useState(
-    () => window.localStorage.getItem(executableIconStorageKey) === "true",
+  const [automaticIcon, setAutomaticIcon] = useState(
+    () => window.localStorage.getItem(automaticIconStorageKey) === "true",
   )
-  const [iconSyncing, setIconSyncing] = useState(false)
-  const [iconSyncStatus, setIconSyncStatus] = useState("Ícone original")
+  const [manualIcon, setManualIcon] = useState<ManualIcon>(savedManualIcon)
+  const [iconBusy, setIconBusy] = useState(false)
+  const [iconStatus, setIconStatus] = useState("Ícone original")
+  const [autostartEnabled, setAutostartEnabled] = useState(false)
+  const [autostartBusy, setAutostartBusy] = useState(false)
+  const [autostartStatus, setAutostartStatus] = useState("Consultando o Windows…")
   const [, setClock] = useState(0)
 
   const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
@@ -131,6 +172,22 @@ export function App() {
     }
   }, [])
 
+  const toggleAutostart = useCallback(async () => {
+    if (!runningInTauri || autostartBusy) return
+    setAutostartBusy(true)
+    try {
+      if (autostartEnabled) await disableAutostart()
+      else await enableAutostart()
+      const enabled = await isAutostartEnabled()
+      setAutostartEnabled(enabled)
+      setAutostartStatus(enabled ? "Inicia oculto na bandeja" : "Início manual")
+    } catch {
+      setAutostartStatus("Não foi possível alterar esta opção")
+    } finally {
+      setAutostartBusy(false)
+    }
+  }, [autostartBusy, autostartEnabled, runningInTauri])
+
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
@@ -146,6 +203,16 @@ export function App() {
       void invoke<BatterySnapshot>("get_cached_battery").then((cached) => {
         if (!disposed) setSnapshot(cached)
       })
+
+      void isAutostartEnabled()
+        .then((enabled) => {
+          if (disposed) return
+          setAutostartEnabled(enabled)
+          setAutostartStatus(enabled ? "Inicia oculto na bandeja" : "Início manual")
+        })
+        .catch(() => {
+          if (!disposed) setAutostartStatus("Estado indisponível")
+        })
     }
     void refresh()
 
@@ -158,37 +225,39 @@ export function App() {
   }, [refresh, runningInTauri])
 
   useEffect(() => {
-    window.localStorage.setItem(executableIconStorageKey, String(syncExecutableIcon))
+    window.localStorage.setItem(automaticIconStorageKey, String(automaticIcon))
+    window.localStorage.setItem(manualIconStorageKey, manualIcon)
     if (!runningInTauri) return
 
-    if (syncExecutableIcon && shownLevel === null) {
-      setIconSyncStatus("Aguardando uma leitura da bateria")
+    if (automaticIcon && shownLevel === null) {
+      setIconStatus("Aguardando uma leitura da bateria")
       return
     }
 
     let disposed = false
-    setIconSyncing(true)
-    void invoke<ExecutableIconResult>("sync_executable_icon", {
-      enabled: syncExecutableIcon,
+    setIconBusy(true)
+    void invoke<ExecutableIconResult>("set_executable_icon_preference", {
+      automatic: automaticIcon,
       level: shownLevel,
+      variant: manualIcon,
     })
       .then((result) => {
-        if (!disposed) setIconSyncStatus(executableIconLabels[result.icon])
+        if (!disposed) setIconStatus(executableIconLabels[result.icon])
       })
       .catch((error: unknown) => {
-        if (!disposed) setIconSyncStatus(iconErrorMessage(error))
+        if (!disposed) setIconStatus(iconErrorMessage(error))
       })
       .finally(() => {
-        if (!disposed) setIconSyncing(false)
+        if (!disposed) setIconBusy(false)
       })
 
     return () => {
       disposed = true
     }
-  }, [runningInTauri, shownLevel, syncExecutableIcon])
+  }, [automaticIcon, manualIcon, runningInTauri, shownLevel])
 
   return (
-    <main className="flex min-h-screen min-w-[360px] flex-col gap-[18px] overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[26px] text-slate-100">
+    <main className="flex min-h-screen min-w-[360px] flex-col gap-3 overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[22px] text-slate-100">
       <header className="grid grid-cols-[48px_1fr_auto] items-center gap-[13px]">
         <BatteryLogo />
         <div>
@@ -205,14 +274,14 @@ export function App() {
       </header>
 
       <section
-        className="flex min-h-[218px] flex-col items-center justify-center rounded-3xl border border-white/7 bg-slate-900/75 shadow-[0_18px_55px_rgba(0,0,0,0.22)] backdrop-blur-xl"
+        className="flex min-h-[205px] flex-col items-center justify-center rounded-3xl border border-white/7 bg-slate-900/75 shadow-[0_18px_55px_rgba(0,0,0,0.22)] backdrop-blur-xl"
         aria-live="polite"
       >
         <div
-          className="relative h-[76px] w-44 rounded-[18px] border-[3px] border-slate-700 p-[7px]"
+          className="relative h-[72px] w-40 rounded-[18px] border-[3px] border-slate-700 p-[7px]"
           aria-hidden="true"
         >
-          <div className="absolute top-[23px] -right-3 h-[25px] w-[9px] rounded-r-md bg-slate-700" />
+          <div className="absolute top-[21px] -right-3 h-[25px] w-[9px] rounded-r-md bg-slate-700" />
           <div className="relative size-full overflow-hidden rounded-[10px] bg-slate-950/60">
             <div
               className={`h-full rounded-[9px] bg-gradient-to-r shadow-[0_0_28px] transition-[width] duration-500 ease-out ${fillClass} ${snapshot.percentage === null ? "opacity-50 saturate-[0.35]" : ""}`}
@@ -236,14 +305,23 @@ export function App() {
       <section className="rounded-[18px] border border-white/7 bg-slate-900/75 px-[17px] shadow-[0_18px_55px_rgba(0,0,0,0.18)] backdrop-blur-xl">
         <Detail label="Conexão" value="Receptor USB 2.4 GHz" />
         <Detail label="Última tentativa" value={relativeTime(snapshot.updatedAt)} />
-        <Detail label="Atualização automática" value="60 segundos" />
-        <ExecutableIconSetting
-          enabled={syncExecutableIcon}
-          busy={iconSyncing}
-          status={iconSyncStatus}
-          onToggle={() => setSyncExecutableIcon((enabled) => !enabled)}
+        <SettingRow
+          label="Iniciar com o Windows"
+          description={autostartBusy ? "Atualizando…" : autostartStatus}
+          enabled={autostartEnabled}
+          busy={autostartBusy}
+          onToggle={() => void toggleAutostart()}
         />
       </section>
+
+      <IconSettings
+        automatic={automaticIcon}
+        selected={manualIcon}
+        busy={iconBusy}
+        status={iconStatus}
+        onAutomaticChange={() => setAutomaticIcon((enabled) => !enabled)}
+        onSelect={setManualIcon}
+      />
 
       <button
         type="button"
@@ -255,59 +333,139 @@ export function App() {
         <span>Atualizar agora</span>
       </button>
 
-      <p className="-mt-1 text-center text-[10px] text-slate-600">
+      <p className="text-center text-[10px] text-slate-600">
         Fechar a janela mantém o monitor na bandeja do Windows.
       </p>
     </main>
   )
 }
 
-function Detail({ label, value, last = false }: { label: string; value: string; last?: boolean }) {
+function Detail({ label, value }: { label: string; value: string }) {
   return (
-    <div
-      className={`flex items-center justify-between py-[13px] text-xs ${last ? "" : "border-b border-white/6"}`}
-    >
+    <div className="flex items-center justify-between border-b border-white/6 py-[11px] text-xs">
       <span className="text-slate-500">{label}</span>
       <strong className="font-semibold text-slate-300">{value}</strong>
     </div>
   )
 }
 
-function ExecutableIconSetting({
+function Toggle({
   enabled,
-  busy,
-  status,
+  disabled = false,
+  label,
   onToggle,
 }: {
   enabled: boolean
-  busy: boolean
-  status: string
+  disabled?: boolean
+  label: string
   onToggle: () => void
 }) {
   return (
-    <div className="flex min-h-[58px] items-center justify-between gap-3 py-2.5 text-xs">
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full border transition disabled:cursor-wait disabled:opacity-50 ${
+        enabled ? "border-emerald-300/35 bg-emerald-500/30" : "border-slate-600 bg-slate-800"
+      }`}
+    >
+      <span
+        className={`absolute top-[3px] left-[3px] size-4 rounded-full bg-slate-100 shadow-sm transition-transform ${
+          enabled ? "translate-x-5" : "translate-x-0"
+        }`}
+      />
+    </button>
+  )
+}
+
+function SettingRow({
+  label,
+  description,
+  enabled,
+  busy,
+  onToggle,
+}: {
+  label: string
+  description: string
+  enabled: boolean
+  busy: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="flex min-h-[54px] items-center justify-between gap-3 py-2 text-xs">
       <div className="min-w-0">
-        <span className="block text-slate-400">Ícone do executável</span>
-        <span className="mt-0.5 block truncate text-[10px] text-slate-600" title={status}>
-          {busy ? "Atualizando…" : `${status}`}
+        <span className="block text-slate-400">{label}</span>
+        <span className="mt-0.5 block truncate text-[10px] text-slate-600" title={description}>
+          {description}
         </span>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={enabled}
-        aria-label="Sincronizar a cor do ícone do executável com a bateria"
-        onClick={onToggle}
-        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full border transition ${
-          enabled ? "border-emerald-300/35 bg-emerald-500/30" : "border-slate-600 bg-slate-800"
-        }`}
-      >
-        <span
-          className={`absolute top-[3px] size-4 rounded-full bg-slate-100 shadow-sm transition-transform ${
-            enabled ? "translate-x-[22px]" : "translate-x-[3px]"
-          }`}
-        />
-      </button>
+      <Toggle enabled={enabled} disabled={busy} label={label} onToggle={onToggle} />
     </div>
+  )
+}
+
+function IconSettings({
+  automatic,
+  selected,
+  busy,
+  status,
+  onAutomaticChange,
+  onSelect,
+}: {
+  automatic: boolean
+  selected: ManualIcon
+  busy: boolean
+  status: string
+  onAutomaticChange: () => void
+  onSelect: (icon: ManualIcon) => void
+}) {
+  const visibleStatus = busy ? "Aplicando ícone…" : `${status}`
+
+  return (
+    <section className="rounded-[18px] border border-white/7 bg-slate-900/75 p-[14px] shadow-[0_18px_55px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xs font-semibold text-slate-300">Ícone do aplicativo</h2>
+          <p className="mt-0.5 text-[10px] text-slate-600">Acompanhar a faixa da bateria</p>
+        </div>
+        <Toggle
+          enabled={automatic}
+          disabled={busy}
+          label="Sincronizar o ícone com a bateria"
+          onToggle={onAutomaticChange}
+        />
+      </div>
+
+      <div className={`mt-3 grid grid-cols-5 gap-1.5 ${automatic ? "opacity-40" : ""}`}>
+        {iconOptions.map((option) => {
+          const active = selected === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              disabled={automatic || busy}
+              onClick={() => onSelect(option.value)}
+              className={`group flex min-w-0 cursor-pointer flex-col items-center gap-1 rounded-xl border p-1.5 transition disabled:cursor-not-allowed ${
+                active
+                  ? "border-emerald-300/35 bg-emerald-400/8"
+                  : "border-transparent hover:border-white/10 hover:bg-white/3"
+              }`}
+            >
+              <img src={option.image} alt="" className="size-9 rounded-[9px]" />
+              <span className="max-w-full truncate text-[9px] text-slate-500 group-hover:text-slate-300">
+                {option.label}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      <p className="mt-2 truncate text-center text-[10px] text-slate-600" title={visibleStatus}>
+        {visibleStatus}
+      </p>
+    </section>
   )
 }

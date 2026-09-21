@@ -16,9 +16,9 @@
         "label": "main",
         "title": "Havit MS966WB Battery Monitor",
         "width": 430,
-        "height": 650,
+        "height": 780,
         "minWidth": 390,
-        "minHeight": 620,
+        "minHeight": 740,
         "resizable": false,
         "maximizable": false,
         "center": true

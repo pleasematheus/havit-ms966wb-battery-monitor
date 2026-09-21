@@ -11,6 +11,9 @@ oficial da Havit, de Python ou de drivers adicionais.
 - porcentagem exata no menu e no tooltip do tray;
 - ícone dinâmico com nível e cor da bateria;
 - sincronização opcional da cor do ícone de `hmbm.exe` com a faixa da bateria;
+- escolha manual entre ícones original, galáctico, monocromático, minimalista e mítico;
+- opção para iniciar oculto junto com o Windows;
+- instância única: abrir novamente apenas traz a janela existente para frente;
 - atualização automática a cada 60 segundos;
 - atualização manual pelo tray ou pela janela;
 - mantém a última leitura quando o mouse entra em suspensão;
@@ -76,16 +79,19 @@ nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 ## Ícone alternativo do executável
 
 A opção **Ícone do executável** usa os crates locais `alt-icons` e
-`alt-icons-build` para aplicar uma destas três variantes ao próprio `hmbm.exe`:
+`alt-icons-build` para aplicar a variante escolhida ao próprio `hmbm.exe`.
+No modo automático, ela acompanha estas três faixas:
 
 - verde para carga acima de 40%;
 - amarelo entre 21% e 40%;
 - vermelho até 20%.
 
-A troca só ocorre quando a faixa muda. Desativar a opção restaura o ícone verde
-original. Como o recurso reescreve os recursos PE do executável, a pasta de
-instalação precisa permitir escrita. Uma janela do Explorer que já estava aberta
-pode manter o ícone anterior em cache até o Explorer ser reiniciado.
+A troca só ocorre quando a faixa muda. Desativar o modo automático aplica o ícone
+selecionado manualmente, com as opções **Original**, **Galáctico**,
+**Monocromático**, **Minimalista** e **Mítico**. Como o recurso reescreve os
+recursos PE do executável, a pasta de instalação precisa permitir escrita. Uma
+janela do Explorer que já estava aberta pode manter o ícone anterior em cache até
+o Explorer ser reiniciado.
 
 Modificar o executável altera seu hash e invalida uma eventual assinatura
 Authenticode. Por isso o recurso é desativado por padrão e deve permanecer
@@ -96,8 +102,19 @@ Para diagnóstico, uma variante também pode ser aplicada sem abrir a interface:
 ```powershell
 .\hmbm.exe --set-icon warning
 .\hmbm.exe --set-icon critical
+.\hmbm.exe --set-icon galactic
+.\hmbm.exe --set-icon monochrome
+.\hmbm.exe --set-icon minimalist
+.\hmbm.exe --set-icon mythic
 .\hmbm.exe --set-icon default
 ```
+
+## Integração com o Windows
+
+O controle **Iniciar com o Windows** registra o aplicativo para abrir já oculto
+na bandeja. O plugin de instância única impede que o autostart, um atalho ou uma
+segunda abertura criem dois monitores simultâneos; nesse caso, a janela da
+instância existente é exibida e recebe foco.
 
 O workflow `build-windows.yml` executa as mesmas validações e publica os
 instaladores como artefato de cada execução no GitHub Actions.
