@@ -1,0 +1,52 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck frontend
+        run: bun run typecheck
+
+      - name: Test Rust
+        run: cargo test --manifest-path ./src-tauri/Cargo.toml
+
+      - name: Build installers
+        run: bun run build
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: havit-ms966wb-battery-monitor-windows
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+
