@@ -9,7 +9,10 @@ Obrigado pelo interesse no projeto.
 3. Execute `bun run typecheck`.
 4. Execute `bun run build:web`.
 5. Execute `cargo fmt --manifest-path .\src-tauri\Cargo.toml -- --check`.
-6. Execute `cargo test --manifest-path .\src-tauri\Cargo.toml`.
+6. Execute `cargo test --manifest-path .\crates\alt-icons\Cargo.toml`.
+7. Execute `cargo test --manifest-path .\src-tauri\Cargo.toml`.
+8. Para validar a troca real do recurso PE, execute
+   `cargo test --manifest-path .\src-tauri\Cargo.toml swaps_executable_icon_and_restores_the_default -- --ignored`.
 
 Não inclua capturas do software oficial, executáveis proprietários, logs HID
 com dados desnecessários ou firmware do dispositivo.

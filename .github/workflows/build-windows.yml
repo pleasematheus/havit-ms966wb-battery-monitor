@@ -39,7 +39,12 @@ jobs:
         run: bun run typecheck
 
       - name: Test Rust
-        run: cargo test --manifest-path ./src-tauri/Cargo.toml
+        run: |
+          cargo test --manifest-path ./crates/alt-icons/Cargo.toml
+          cargo test --manifest-path ./src-tauri/Cargo.toml
+
+      - name: Test executable icon swap
+        run: cargo test --manifest-path ./src-tauri/Cargo.toml swaps_executable_icon_and_restores_the_default -- --ignored
 
       - name: Build installers
         run: bun run build

@@ -11,6 +11,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
+alt_icons::include_icons!();
+
 const VID: u16 = 0x320F;
 const PID: u16 = 0x2261;
 const USAGE_PAGE: u16 = 0xFF1C;
@@ -72,6 +74,25 @@ impl BatteryStore {
 
 struct TrayItems {
     status: MenuItem<Wry>,
+}
+
+struct ExecutableIconStore {
+    update_lock: tokio::sync::Mutex<()>,
+}
+
+impl ExecutableIconStore {
+    fn new() -> Self {
+        Self {
+            update_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutableIconResult {
+    icon: String,
+    changed: bool,
 }
 
 enum ReadFailure {
@@ -293,7 +314,7 @@ fn make_battery_icon(level: Option<u8>, fresh: bool) -> Image<'static> {
     }
 
     if let Some(level) = level {
-        let width = ((level as u32 * 16) + 99) / 100;
+        let width = (level as u32 * 16).div_ceil(100);
         for x in 7..(7 + width) {
             for y in 11..21 {
                 pixel(x, y, fill);
@@ -312,11 +333,11 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn hide_on_close(window: &Window, event: &WindowEvent) {
-    if window.label() == "main" {
-        if let WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let _ = window.hide();
-        }
+    if window.label() == "main"
+        && let WindowEvent::CloseRequested { api, .. } = event
+    {
+        api.prevent_close();
+        let _ = window.hide();
     }
 }
 
@@ -330,13 +351,100 @@ async fn refresh_battery(app: AppHandle) -> BatterySnapshot {
     refresh_and_publish(app).await
 }
 
+fn icon_for_level(level: u8) -> AppIcon {
+    match level {
+        0..=20 => AppIcon::Critical,
+        21..=40 => AppIcon::Warning,
+        _ => AppIcon::Default,
+    }
+}
+
+fn set_executable_icon(desired: AppIcon) -> Result<ExecutableIconResult, String> {
+    let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
+    let desired_name = alt_icons::Icon::name(&desired);
+    let already_active = current.as_deref() == Some(desired_name)
+        || (current.is_none() && desired == AppIcon::Default);
+
+    if !already_active {
+        alt_icons::set_icon(desired).map_err(|error| error.to_string())?;
+    }
+
+    Ok(ExecutableIconResult {
+        icon: desired_name.into(),
+        changed: !already_active,
+    })
+}
+
+fn apply_executable_icon(enabled: bool, level: Option<u8>) -> Result<ExecutableIconResult, String> {
+    let desired = match (enabled, level) {
+        (false, _) => AppIcon::Default,
+        (true, Some(level)) => icon_for_level(level),
+        (true, None) => {
+            let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
+            return Ok(ExecutableIconResult {
+                icon: current.unwrap_or_else(|| "Default".into()),
+                changed: false,
+            });
+        }
+    };
+    set_executable_icon(desired)
+}
+
+/// Handles the diagnostic `--set-icon` command before the Tauri runtime starts.
+/// Returns an exit code when the command was present, or `None` for normal startup.
+pub fn handle_icon_cli_command() -> Option<i32> {
+    let mut arguments = std::env::args().skip(1);
+    if arguments.next().as_deref() != Some("--set-icon") {
+        return None;
+    }
+
+    let requested = arguments.next();
+    let icon = match requested.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("default" | "green") => AppIcon::Default,
+        Some("warning" | "yellow") => AppIcon::Warning,
+        Some("critical" | "red") => AppIcon::Critical,
+        _ => {
+            eprintln!("uso: hmbm.exe --set-icon <default|warning|critical>");
+            return Some(2);
+        }
+    };
+
+    let result = alt_icons::init()
+        .map_err(|error| error.to_string())
+        .and_then(|_| set_executable_icon(icon).map(|_| ()));
+    if let Err(error) = result {
+        eprintln!("não foi possível trocar o ícone: {error}");
+        return Some(1);
+    }
+
+    Some(0)
+}
+
+#[tauri::command]
+async fn sync_executable_icon(
+    state: State<'_, ExecutableIconStore>,
+    enabled: bool,
+    level: Option<u8>,
+) -> Result<ExecutableIconResult, String> {
+    let _update_guard = state.update_lock.lock().await;
+    tauri::async_runtime::spawn_blocking(move || apply_executable_icon(enabled, level))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = alt_icons::init() {
+        eprintln!("não foi possível limpar uma troca anterior de ícone: {error}");
+    }
+
     tauri::Builder::default()
         .manage(BatteryStore::new())
+        .manage(ExecutableIconStore::new())
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
-            refresh_battery
+            refresh_battery,
+            sync_executable_icon
         ])
         .setup(|app| {
             let status = MenuItem::with_id(
@@ -408,6 +516,38 @@ mod tests {
         assert_eq!(&packet[..8], &[0x04, 0x20, 0x00, 0x1A, 0x06, 0, 0, 0]);
         assert_eq!(packet[32], 0x02);
         assert_eq!(packet.len(), 64);
+    }
+
+    #[test]
+    fn executable_icon_follows_battery_bands() {
+        assert_eq!(icon_for_level(0), AppIcon::Critical);
+        assert_eq!(icon_for_level(20), AppIcon::Critical);
+        assert_eq!(icon_for_level(21), AppIcon::Warning);
+        assert_eq!(icon_for_level(40), AppIcon::Warning);
+        assert_eq!(icon_for_level(41), AppIcon::Default);
+        assert_eq!(icon_for_level(100), AppIcon::Default);
+    }
+
+    #[test]
+    #[ignore = "rewrites this test executable's Windows icon"]
+    fn swaps_executable_icon_and_restores_the_default() {
+        alt_icons::init().expect("leftovers from an earlier icon swap should be cleaned");
+
+        let warning = apply_executable_icon(true, Some(30))
+            .expect("the warning icon should be applied to the test executable");
+        assert_eq!(warning.icon, "Warning");
+        assert_eq!(
+            alt_icons::current_icon().expect("the active icon should be readable"),
+            Some("Warning".into())
+        );
+
+        let default = apply_executable_icon(false, None)
+            .expect("the default icon should be restored on the test executable");
+        assert_eq!(default.icon, "Default");
+        assert_eq!(
+            alt_icons::current_icon().expect("the restored icon should be readable"),
+            Some("Default".into())
+        );
     }
 
     #[test]

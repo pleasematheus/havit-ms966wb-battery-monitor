@@ -1,8 +1,9 @@
 /node_modules/
 /dist/
 /src-tauri/target/
+/crates/*/target/
+/crates/*/Cargo.lock
 /.idea/
 /.vscode/
 *.log
 *.pdb
-

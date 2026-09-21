@@ -10,6 +10,7 @@ oficial da Havit, de Python ou de drivers adicionais.
 
 - porcentagem exata no menu e no tooltip do tray;
 - ícone dinâmico com nível e cor da bateria;
+- sincronização opcional da cor do ícone de `hmbm.exe` com a faixa da bateria;
 - atualização automática a cada 60 segundos;
 - atualização manual pelo tray ou pela janela;
 - mantém a última leitura quando o mouse entra em suspensão;
@@ -72,6 +73,32 @@ Os artefatos são produzidos em:
 O executável instalado se chama `hmbm.exe`; o nome exibido para o usuário e
 nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
+## Ícone alternativo do executável
+
+A opção **Ícone do executável** usa os crates locais `alt-icons` e
+`alt-icons-build` para aplicar uma destas três variantes ao próprio `hmbm.exe`:
+
+- verde para carga acima de 40%;
+- amarelo entre 21% e 40%;
+- vermelho até 20%.
+
+A troca só ocorre quando a faixa muda. Desativar a opção restaura o ícone verde
+original. Como o recurso reescreve os recursos PE do executável, a pasta de
+instalação precisa permitir escrita. Uma janela do Explorer que já estava aberta
+pode manter o ícone anterior em cache até o Explorer ser reiniciado.
+
+Modificar o executável altera seu hash e invalida uma eventual assinatura
+Authenticode. Por isso o recurso é desativado por padrão e deve permanecer
+desativado em distribuições assinadas.
+
+Para diagnóstico, uma variante também pode ser aplicada sem abrir a interface:
+
+```powershell
+.\hmbm.exe --set-icon warning
+.\hmbm.exe --set-icon critical
+.\hmbm.exe --set-icon default
+```
+
 O workflow `build-windows.yml` executa as mesmas validações e publica os
 instaladores como artefato de cada execução no GitHub Actions.
 
@@ -99,6 +126,7 @@ perfis, firmware ou qualquer outra configuração do mouse.
 - Bun + Vite
 - Biome
 - `hidapi`
+- `alt-icons` e `alt-icons-build` incorporados em `crates/`
 
 ## Aviso
 

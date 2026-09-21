@@ -13,6 +13,19 @@ export interface BatterySnapshot {
   lastSuccessAt: number | null
 }
 
+interface ExecutableIconResult {
+  icon: "Default" | "Warning" | "Critical"
+  changed: boolean
+}
+
+const executableIconStorageKey = "hmbm.syncExecutableIcon"
+
+const executableIconLabels: Record<ExecutableIconResult["icon"], string> = {
+  Default: "Verde · carga normal",
+  Warning: "Amarelo · carga baixa",
+  Critical: "Vermelho · carga crítica",
+}
+
 const initialSnapshot: BatterySnapshot = {
   percentage: null,
   lastKnownPercentage: null,
@@ -52,6 +65,13 @@ function relativeTime(timestamp: number): string {
   return `Há ${Math.floor(elapsed / 60_000)} min`
 }
 
+function iconErrorMessage(error: unknown): string {
+  const message = String(error)
+  if (message.includes("cannot write")) return "Sem permissão para alterar o executável"
+  if (message.includes("already changing")) return "Outra troca de ícone está em andamento"
+  return "Não foi possível trocar o ícone"
+}
+
 function BatteryLogo() {
   return (
     <div className="grid size-12 place-items-center rounded-2xl border border-emerald-300/20 bg-gradient-to-br from-emerald-900/70 to-slate-900 shadow-[inset_0_1px_rgba(255,255,255,0.06)]">
@@ -83,6 +103,11 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
 export function App() {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
   const [refreshing, setRefreshing] = useState(false)
+  const [syncExecutableIcon, setSyncExecutableIcon] = useState(
+    () => window.localStorage.getItem(executableIconStorageKey) === "true",
+  )
+  const [iconSyncing, setIconSyncing] = useState(false)
+  const [iconSyncStatus, setIconSyncStatus] = useState("Ícone original")
   const [, setClock] = useState(0)
 
   const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
@@ -131,6 +156,36 @@ export function App() {
       window.clearInterval(timer)
     }
   }, [refresh, runningInTauri])
+
+  useEffect(() => {
+    window.localStorage.setItem(executableIconStorageKey, String(syncExecutableIcon))
+    if (!runningInTauri) return
+
+    if (syncExecutableIcon && shownLevel === null) {
+      setIconSyncStatus("Aguardando uma leitura da bateria")
+      return
+    }
+
+    let disposed = false
+    setIconSyncing(true)
+    void invoke<ExecutableIconResult>("sync_executable_icon", {
+      enabled: syncExecutableIcon,
+      level: shownLevel,
+    })
+      .then((result) => {
+        if (!disposed) setIconSyncStatus(executableIconLabels[result.icon])
+      })
+      .catch((error: unknown) => {
+        if (!disposed) setIconSyncStatus(iconErrorMessage(error))
+      })
+      .finally(() => {
+        if (!disposed) setIconSyncing(false)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [runningInTauri, shownLevel, syncExecutableIcon])
 
   return (
     <main className="flex min-h-screen min-w-[360px] flex-col gap-[18px] overflow-hidden bg-[radial-gradient(circle_at_15%_0%,rgba(48,213,145,0.12),transparent_34%),radial-gradient(circle_at_100%_75%,rgba(51,138,255,0.10),transparent_42%)] p-[26px] text-slate-100">
@@ -181,7 +236,13 @@ export function App() {
       <section className="rounded-[18px] border border-white/7 bg-slate-900/75 px-[17px] shadow-[0_18px_55px_rgba(0,0,0,0.18)] backdrop-blur-xl">
         <Detail label="Conexão" value="Receptor USB 2.4 GHz" />
         <Detail label="Última tentativa" value={relativeTime(snapshot.updatedAt)} />
-        <Detail label="Atualização automática" value="60 segundos" last />
+        <Detail label="Atualização automática" value="60 segundos" />
+        <ExecutableIconSetting
+          enabled={syncExecutableIcon}
+          busy={iconSyncing}
+          status={iconSyncStatus}
+          onToggle={() => setSyncExecutableIcon((enabled) => !enabled)}
+        />
       </section>
 
       <button
@@ -208,6 +269,45 @@ function Detail({ label, value, last = false }: { label: string; value: string; 
     >
       <span className="text-slate-500">{label}</span>
       <strong className="font-semibold text-slate-300">{value}</strong>
+    </div>
+  )
+}
+
+function ExecutableIconSetting({
+  enabled,
+  busy,
+  status,
+  onToggle,
+}: {
+  enabled: boolean
+  busy: boolean
+  status: string
+  onToggle: () => void
+}) {
+  return (
+    <div className="flex min-h-[58px] items-center justify-between gap-3 py-2.5 text-xs">
+      <div className="min-w-0">
+        <span className="block text-slate-400">Ícone do executável</span>
+        <span className="mt-0.5 block truncate text-[10px] text-slate-600" title={status}>
+          {busy ? "Atualizando…" : `${status}`}
+        </span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label="Sincronizar a cor do ícone do executável com a bateria"
+        onClick={onToggle}
+        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full border transition ${
+          enabled ? "border-emerald-300/35 bg-emerald-500/30" : "border-slate-600 bg-slate-800"
+        }`}
+      >
+        <span
+          className={`absolute top-[3px] size-4 rounded-full bg-slate-100 shadow-sm transition-transform ${
+            enabled ? "translate-x-[22px]" : "translate-x-[3px]"
+          }`}
+        />
+      </button>
     </div>
   )
 }
