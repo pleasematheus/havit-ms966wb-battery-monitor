@@ -31,8 +31,9 @@ const REPORT_LENGTH: usize = 64;
 const TRAY_ID: &str = "battery-monitor";
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_LOW_BATTERY_THRESHOLD: u8 = 20;
-const MIN_LOW_BATTERY_THRESHOLD: u8 = 5;
-const MAX_LOW_BATTERY_THRESHOLD: u8 = 50;
+const DEFAULT_HIGH_BATTERY_THRESHOLD: u8 = 80;
+const MIN_BATTERY_THRESHOLD: u8 = 5;
+const MAX_BATTERY_THRESHOLD: u8 = 100;
 const LOW_BATTERY_THRESHOLD_FILE: &str = "low-battery-threshold";
 
 #[derive(Clone, Copy, Serialize)]
@@ -50,6 +51,7 @@ enum BatteryStatus {
 struct BatterySnapshot {
     percentage: Option<u8>,
     last_known_percentage: Option<u8>,
+    charging: Option<bool>,
     status: BatteryStatus,
     message: String,
     updated_at: u64,
@@ -61,6 +63,7 @@ impl BatterySnapshot {
         Self {
             percentage: None,
             last_known_percentage: None,
+            charging: None,
             status: BatteryStatus::Sleeping,
             message: "Aguardando a primeira leitura…".into(),
             updated_at: now_ms(),
@@ -83,65 +86,97 @@ impl BatteryStore {
     }
 }
 
-struct LowBatteryAlertState {
-    threshold: u8,
-    notified: bool,
+#[derive(Debug, PartialEq, Eq)]
+enum BatteryAlert {
+    Low { level: u8, threshold: u8 },
+    High { level: u8, threshold: u8 },
 }
 
-impl LowBatteryAlertState {
-    fn new(threshold: u8) -> Self {
+struct BatteryAlertState {
+    low_threshold: u8,
+    high_threshold: u8,
+    low_armed: bool,
+    high_armed: bool,
+    initialized: bool,
+}
+
+impl BatteryAlertState {
+    fn new(low_threshold: u8, high_threshold: u8) -> Self {
         Self {
-            threshold,
-            notified: false,
+            low_threshold,
+            high_threshold,
+            low_armed: true,
+            high_armed: false,
+            initialized: false,
         }
     }
 
-    fn observe(&mut self, percentage: Option<u8>) -> bool {
-        match percentage {
-            Some(level) if level <= self.threshold => {
-                if self.notified {
-                    false
-                } else {
-                    self.notified = true;
-                    true
-                }
+    fn observe(&mut self, percentage: Option<u8>) -> Option<BatteryAlert> {
+        let level = percentage?;
+
+        if !self.initialized {
+            self.initialized = true;
+            self.high_armed = level < self.high_threshold;
+        }
+
+        if level <= self.low_threshold {
+            self.high_armed = true;
+            if self.low_armed {
+                self.low_armed = false;
+                return Some(BatteryAlert::Low {
+                    level,
+                    threshold: self.low_threshold,
+                });
             }
-            Some(_) => {
-                self.notified = false;
-                false
+        }
+
+        if level >= self.high_threshold {
+            self.low_armed = true;
+            if self.high_armed {
+                self.high_armed = false;
+                return Some(BatteryAlert::High {
+                    level,
+                    threshold: self.high_threshold,
+                });
             }
-            None => false,
+        }
+
+        None
+    }
+
+    fn settings(&self) -> BatteryAlertSettings {
+        BatteryAlertSettings {
+            low_threshold: self.low_threshold,
+            high_threshold: self.high_threshold,
         }
     }
 
-    fn settings(&self) -> LowBatterySettings {
-        LowBatterySettings {
-            threshold: self.threshold,
-        }
-    }
-
-    fn set_threshold(&mut self, threshold: u8) {
-        self.threshold = threshold;
-        self.notified = false;
+    fn set_thresholds(&mut self, low_threshold: u8, high_threshold: u8) {
+        self.low_threshold = low_threshold;
+        self.high_threshold = high_threshold;
+        self.low_armed = true;
+        self.high_armed = false;
+        self.initialized = false;
     }
 }
 
-struct LowBatteryNotifier {
-    state: Mutex<LowBatteryAlertState>,
+struct BatteryAlertNotifier {
+    state: Mutex<BatteryAlertState>,
 }
 
-impl LowBatteryNotifier {
-    fn new(threshold: u8) -> Self {
+impl BatteryAlertNotifier {
+    fn new(low_threshold: u8, high_threshold: u8) -> Self {
         Self {
-            state: Mutex::new(LowBatteryAlertState::new(threshold)),
+            state: Mutex::new(BatteryAlertState::new(low_threshold, high_threshold)),
         }
     }
 }
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LowBatterySettings {
-    threshold: u8,
+struct BatteryAlertSettings {
+    low_threshold: u8,
+    high_threshold: u8,
 }
 
 struct TrayItems {
@@ -190,6 +225,12 @@ enum ReadFailure {
     Hid(String),
 }
 
+#[derive(Clone, Copy)]
+struct BatteryReading {
+    percentage: u8,
+    charging: bool,
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -197,8 +238,10 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn valid_low_battery_threshold(threshold: u8) -> bool {
-    (MIN_LOW_BATTERY_THRESHOLD..=MAX_LOW_BATTERY_THRESHOLD).contains(&threshold)
+fn valid_battery_thresholds(low_threshold: u8, high_threshold: u8) -> bool {
+    (MIN_BATTERY_THRESHOLD..MAX_BATTERY_THRESHOLD).contains(&low_threshold)
+        && (MIN_BATTERY_THRESHOLD..=MAX_BATTERY_THRESHOLD).contains(&high_threshold)
+        && low_threshold < high_threshold
 }
 
 fn low_battery_threshold_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -208,39 +251,62 @@ fn low_battery_threshold_path(app: &AppHandle) -> Result<std::path::PathBuf, Str
         .map_err(|error| format!("não foi possível localizar as configurações: {error}"))
 }
 
-fn load_low_battery_threshold(app: &AppHandle) -> u8 {
+fn parse_battery_thresholds(value: &str) -> Option<BatteryAlertSettings> {
+    let value = value.trim();
+    let (low_threshold, high_threshold) = match value.split_once(',') {
+        Some((low, high)) => (low.trim().parse().ok()?, high.trim().parse().ok()?),
+        None => (value.parse().ok()?, DEFAULT_HIGH_BATTERY_THRESHOLD),
+    };
+
+    valid_battery_thresholds(low_threshold, high_threshold).then_some(BatteryAlertSettings {
+        low_threshold,
+        high_threshold,
+    })
+}
+
+fn default_battery_alert_settings() -> BatteryAlertSettings {
+    BatteryAlertSettings {
+        low_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
+        high_threshold: DEFAULT_HIGH_BATTERY_THRESHOLD,
+    }
+}
+
+fn load_battery_alert_settings(app: &AppHandle) -> BatteryAlertSettings {
     let path = match low_battery_threshold_path(app) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("{error}");
-            return DEFAULT_LOW_BATTERY_THRESHOLD;
+            return default_battery_alert_settings();
         }
     };
 
     match fs::read_to_string(path) {
-        Ok(value) => value
-            .trim()
-            .parse()
-            .ok()
-            .filter(|threshold| valid_low_battery_threshold(*threshold))
-            .unwrap_or(DEFAULT_LOW_BATTERY_THRESHOLD),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_LOW_BATTERY_THRESHOLD,
+        Ok(value) => {
+            parse_battery_thresholds(&value).unwrap_or_else(default_battery_alert_settings)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            default_battery_alert_settings()
+        }
         Err(error) => {
-            eprintln!("não foi possível carregar o limite de bateria baixa: {error}");
-            DEFAULT_LOW_BATTERY_THRESHOLD
+            eprintln!("não foi possível carregar os limites de bateria: {error}");
+            default_battery_alert_settings()
         }
     }
 }
 
-fn save_low_battery_threshold(app: &AppHandle, threshold: u8) -> Result<(), String> {
+fn save_battery_alert_settings(
+    app: &AppHandle,
+    low_threshold: u8,
+    high_threshold: u8,
+) -> Result<(), String> {
     let path = low_battery_threshold_path(app)?;
     let directory = path
         .parent()
         .ok_or_else(|| "caminho de configurações inválido".to_string())?;
     fs::create_dir_all(directory)
         .map_err(|error| format!("não foi possível criar a pasta de configurações: {error}"))?;
-    fs::write(path, threshold.to_string())
-        .map_err(|error| format!("não foi possível salvar o limite de bateria baixa: {error}"))
+    fs::write(path, format!("{low_threshold},{high_threshold}"))
+        .map_err(|error| format!("não foi possível salvar os limites de bateria: {error}"))
 }
 
 fn make_read_request() -> [u8; REPORT_LENGTH] {
@@ -259,7 +325,7 @@ fn make_read_request() -> [u8; REPORT_LENGTH] {
     packet
 }
 
-fn query_battery() -> Result<u8, ReadFailure> {
+fn query_battery() -> Result<BatteryReading, ReadFailure> {
     let api = HidApi::new().map_err(|error| ReadFailure::Hid(error.to_string()))?;
     let info = api
         .device_list()
@@ -316,18 +382,31 @@ fn query_battery() -> Result<u8, ReadFailure> {
             "porcentagem inválida: {percentage}"
         )));
     }
-    Ok(percentage)
+    let charging = match response[9] {
+        0 => false,
+        1 => true,
+        value => {
+            return Err(ReadFailure::Protocol(format!(
+                "estado de carregamento inválido: 0x{value:02X}"
+            )));
+        }
+    };
+    Ok(BatteryReading {
+        percentage,
+        charging,
+    })
 }
 
 fn snapshot_from_result(
     previous: &BatterySnapshot,
-    result: Result<u8, ReadFailure>,
+    result: Result<BatteryReading, ReadFailure>,
 ) -> BatterySnapshot {
     let updated_at = now_ms();
     match result {
-        Ok(percentage) => BatterySnapshot {
-            percentage: Some(percentage),
-            last_known_percentage: Some(percentage),
+        Ok(reading) => BatterySnapshot {
+            percentage: Some(reading.percentage),
+            last_known_percentage: Some(reading.percentage),
+            charging: Some(reading.charging),
             status: BatteryStatus::Available,
             message: "Leitura recebida diretamente do receptor USB.".into(),
             updated_at,
@@ -336,6 +415,7 @@ fn snapshot_from_result(
         Err(ReadFailure::Sleeping) => BatterySnapshot {
             percentage: None,
             last_known_percentage: previous.last_known_percentage,
+            charging: None,
             status: BatteryStatus::Sleeping,
             message: "O mouse está dormindo ou desligado. Mova-o para atualizar.".into(),
             updated_at,
@@ -344,6 +424,7 @@ fn snapshot_from_result(
         Err(ReadFailure::NotFound) => BatterySnapshot {
             percentage: None,
             last_known_percentage: previous.last_known_percentage,
+            charging: None,
             status: BatteryStatus::NotFound,
             message: "Receptor USB VID_320F/PID_2261 não encontrado.".into(),
             updated_at,
@@ -352,6 +433,7 @@ fn snapshot_from_result(
         Err(ReadFailure::Busy) => BatterySnapshot {
             percentage: None,
             last_known_percentage: previous.last_known_percentage,
+            charging: None,
             status: BatteryStatus::Busy,
             message: "Interface HID ocupada. Feche o aplicativo oficial da Havit.".into(),
             updated_at,
@@ -360,6 +442,7 @@ fn snapshot_from_result(
         Err(ReadFailure::Protocol(details)) | Err(ReadFailure::Hid(details)) => BatterySnapshot {
             percentage: None,
             last_known_percentage: previous.last_known_percentage,
+            charging: None,
             status: BatteryStatus::Error,
             message: format!("Falha ao consultar o receptor: {details}"),
             updated_at,
@@ -380,34 +463,38 @@ async fn refresh_and_publish(app: AppHandle) -> BatterySnapshot {
     *store.snapshot.lock().unwrap() = snapshot.clone();
 
     update_tray(&app, &snapshot);
-    notify_low_battery(&app, snapshot.percentage);
+    notify_battery_alert(&app, snapshot.percentage);
     let _ = app.emit("battery-updated", snapshot.clone());
     snapshot
 }
 
-fn notify_low_battery(app: &AppHandle, percentage: Option<u8>) {
-    let notifier = app.state::<LowBatteryNotifier>();
-    let should_notify = notifier
+fn notify_battery_alert(app: &AppHandle, percentage: Option<u8>) {
+    let notifier = app.state::<BatteryAlertNotifier>();
+    let alert = notifier
         .state
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .observe(percentage);
 
-    if !should_notify {
+    let Some(alert) = alert else {
         return;
-    }
+    };
 
-    let level = percentage.expect("a low-battery alert always has a percentage");
-    if let Err(error) = app
-        .notification()
-        .builder()
-        .title("Bateria baixa do Havit MS966WB")
-        .body(format!(
-            "O mouse está com {level}% de carga. Recarregue-o em breve."
-        ))
-        .show()
-    {
-        eprintln!("não foi possível exibir a notificação de bateria baixa: {error}");
+    let (title, body) = match alert {
+        BatteryAlert::Low { level, threshold } => (
+            "Bateria baixa do Havit MS966WB",
+            format!("O mouse chegou a {level}% (limite: {threshold}%). Recarregue-o em breve."),
+        ),
+        BatteryAlert::High { level, threshold } => (
+            "Carga suficiente do Havit MS966WB",
+            format!(
+                "O mouse chegou a {level}% (limite: {threshold}%). Você já pode desconectar o cabo."
+            ),
+        ),
+    };
+
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("não foi possível exibir a notificação de bateria: {error}");
     }
 }
 
@@ -512,7 +599,7 @@ async fn refresh_battery(app: AppHandle) -> BatterySnapshot {
 }
 
 #[tauri::command]
-fn get_low_battery_settings(state: State<'_, LowBatteryNotifier>) -> LowBatterySettings {
+fn get_battery_alert_settings(state: State<'_, BatteryAlertNotifier>) -> BatteryAlertSettings {
     state
         .state
         .lock()
@@ -521,33 +608,27 @@ fn get_low_battery_settings(state: State<'_, LowBatteryNotifier>) -> LowBatteryS
 }
 
 #[tauri::command]
-fn set_low_battery_threshold(
+fn set_battery_alert_thresholds(
     app: AppHandle,
-    state: State<'_, LowBatteryNotifier>,
-    threshold: u8,
-) -> Result<LowBatterySettings, String> {
-    if !valid_low_battery_threshold(threshold) {
+    state: State<'_, BatteryAlertNotifier>,
+    low_threshold: u8,
+    high_threshold: u8,
+) -> Result<BatteryAlertSettings, String> {
+    if !valid_battery_thresholds(low_threshold, high_threshold) {
         return Err(format!(
-            "o limite deve ficar entre {MIN_LOW_BATTERY_THRESHOLD}% e {MAX_LOW_BATTERY_THRESHOLD}%"
+            "os limites devem ficar entre {MIN_BATTERY_THRESHOLD}% e {MAX_BATTERY_THRESHOLD}%, com o inferior abaixo do superior"
         ));
     }
 
-    save_low_battery_threshold(&app, threshold)?;
+    save_battery_alert_settings(&app, low_threshold, high_threshold)?;
     let settings = {
         let mut alert = state
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        alert.set_threshold(threshold);
+        alert.set_thresholds(low_threshold, high_threshold);
         alert.settings()
     };
-    let percentage = app
-        .state::<BatteryStore>()
-        .snapshot
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .percentage;
-    notify_low_battery(&app, percentage);
     Ok(settings)
 }
 
@@ -791,13 +872,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
             refresh_battery,
-            get_low_battery_settings,
-            set_low_battery_threshold,
+            get_battery_alert_settings,
+            set_battery_alert_thresholds,
             set_executable_icon_preference
         ])
         .setup(move |app| {
-            let threshold = load_low_battery_threshold(app.handle());
-            app.manage(LowBatteryNotifier::new(threshold));
+            let settings = load_battery_alert_settings(app.handle());
+            app.manage(BatteryAlertNotifier::new(
+                settings.low_threshold,
+                settings.high_threshold,
+            ));
 
             let status = MenuItem::with_id(
                 app,
@@ -885,30 +969,98 @@ mod tests {
     }
 
     #[test]
-    fn low_battery_alert_fires_once_until_the_level_recovers() {
-        let mut state = LowBatteryAlertState::new(DEFAULT_LOW_BATTERY_THRESHOLD);
+    fn battery_alerts_fire_once_per_full_cycle() {
+        let mut state = BatteryAlertState::new(
+            DEFAULT_LOW_BATTERY_THRESHOLD,
+            DEFAULT_HIGH_BATTERY_THRESHOLD,
+        );
 
-        assert!(!state.observe(None));
-        assert!(state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD)));
-        assert!(!state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD - 1)));
-        assert!(!state.observe(None));
-        assert!(!state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD + 1)));
-        assert!(state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD)));
+        assert_eq!(state.observe(None), None);
+        assert_eq!(state.observe(Some(50)), None);
+        assert_eq!(
+            state.observe(Some(DEFAULT_HIGH_BATTERY_THRESHOLD)),
+            Some(BatteryAlert::High {
+                level: DEFAULT_HIGH_BATTERY_THRESHOLD,
+                threshold: DEFAULT_HIGH_BATTERY_THRESHOLD,
+            })
+        );
+        assert_eq!(state.observe(Some(100)), None);
+        assert_eq!(state.observe(Some(50)), None);
+        assert_eq!(
+            state.observe(Some(DEFAULT_LOW_BATTERY_THRESHOLD)),
+            Some(BatteryAlert::Low {
+                level: DEFAULT_LOW_BATTERY_THRESHOLD,
+                threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
+            })
+        );
+        assert_eq!(state.observe(Some(10)), None);
+        assert_eq!(
+            state.observe(Some(DEFAULT_HIGH_BATTERY_THRESHOLD)),
+            Some(BatteryAlert::High {
+                level: DEFAULT_HIGH_BATTERY_THRESHOLD,
+                threshold: DEFAULT_HIGH_BATTERY_THRESHOLD,
+            })
+        );
     }
 
     #[test]
-    fn low_battery_alert_uses_the_configured_threshold() {
-        let mut state = LowBatteryAlertState::new(35);
+    fn high_battery_alert_needs_a_lower_observation_first() {
+        let mut state = BatteryAlertState::new(20, 80);
 
-        assert!(!state.observe(Some(36)));
-        assert!(state.observe(Some(35)));
-        state.set_threshold(10);
-        assert!(!state.observe(Some(11)));
-        assert!(state.observe(Some(10)));
-        assert!(valid_low_battery_threshold(MIN_LOW_BATTERY_THRESHOLD));
-        assert!(valid_low_battery_threshold(MAX_LOW_BATTERY_THRESHOLD));
-        assert!(!valid_low_battery_threshold(MIN_LOW_BATTERY_THRESHOLD - 1));
-        assert!(!valid_low_battery_threshold(MAX_LOW_BATTERY_THRESHOLD + 1));
+        assert_eq!(state.observe(Some(90)), None);
+        assert_eq!(state.observe(Some(80)), None);
+        assert_eq!(
+            state.observe(Some(20)),
+            Some(BatteryAlert::Low {
+                level: 20,
+                threshold: 20
+            })
+        );
+        assert_eq!(state.observe(Some(79)), None);
+        assert_eq!(
+            state.observe(Some(82)),
+            Some(BatteryAlert::High {
+                level: 82,
+                threshold: 80
+            })
+        );
+    }
+
+    #[test]
+    fn configured_thresholds_are_validated_and_legacy_settings_are_migrated() {
+        assert!(valid_battery_thresholds(5, 100));
+        assert!(valid_battery_thresholds(45, 50));
+        assert!(!valid_battery_thresholds(0, 80));
+        assert!(!valid_battery_thresholds(80, 80));
+        assert!(!valid_battery_thresholds(90, 80));
+
+        let legacy = parse_battery_thresholds("35").expect("legacy threshold should load");
+        assert_eq!(legacy.low_threshold, 35);
+        assert_eq!(legacy.high_threshold, DEFAULT_HIGH_BATTERY_THRESHOLD);
+
+        let current = parse_battery_thresholds("25,85").expect("threshold pair should load");
+        assert_eq!(current.low_threshold, 25);
+        assert_eq!(current.high_threshold, 85);
+    }
+
+    #[test]
+    fn battery_snapshot_exposes_the_charging_state() {
+        let previous = BatterySnapshot::initial();
+        let charging = snapshot_from_result(
+            &previous,
+            Ok(BatteryReading {
+                percentage: 90,
+                charging: true,
+            }),
+        );
+
+        assert_eq!(charging.percentage, Some(90));
+        assert_eq!(charging.charging, Some(true));
+
+        let unavailable = snapshot_from_result(&charging, Err(ReadFailure::Sleeping));
+        assert_eq!(unavailable.percentage, None);
+        assert_eq!(unavailable.last_known_percentage, Some(90));
+        assert_eq!(unavailable.charging, None);
     }
 
     #[test]
@@ -984,7 +1136,10 @@ mod tests {
     #[ignore = "requires a connected and awake Havit MS966WB"]
     fn reads_battery_from_real_hardware() {
         match query_battery() {
-            Ok(level) => println!("Havit MS966WB battery: {level}%"),
+            Ok(reading) => println!(
+                "Havit MS966WB battery: {}% · charging: {}",
+                reading.percentage, reading.charging
+            ),
             Err(_) => panic!("could not read the connected mouse battery"),
         }
     }

@@ -5,17 +5,7 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart"
-import {
-  BatteryCharging,
-  BellRing,
-  Clock3,
-  Minus,
-  Palette,
-  Plus,
-  Power,
-  RefreshCw,
-  Usb,
-} from "lucide-react"
+import { BatteryCharging, BellRing, Clock3, Palette, Power, RefreshCw, Usb } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -29,6 +19,7 @@ import {
 } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
+import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
@@ -47,6 +38,7 @@ type ExecutableIcon = ManualIcon | "Warning" | "Critical"
 export interface BatterySnapshot {
   percentage: number | null
   lastKnownPercentage: number | null
+  charging: boolean | null
   status: BatteryStatus
   message: string
   updatedAt: number
@@ -58,8 +50,9 @@ interface ExecutableIconResult {
   changed: boolean
 }
 
-interface LowBatterySettings {
-  threshold: number
+interface BatteryAlertSettings {
+  lowThreshold: number
+  highThreshold: number
 }
 
 interface IconOption {
@@ -70,9 +63,10 @@ interface IconOption {
 
 const automaticIconStorageKey = "hmbm.syncExecutableIcon"
 const manualIconStorageKey = "hmbm.manualExecutableIcon"
-const defaultNotificationThreshold = 20
+const defaultLowNotificationThreshold = 20
+const defaultHighNotificationThreshold = 80
 const minNotificationThreshold = 5
-const maxNotificationThreshold = 50
+const maxNotificationThreshold = 100
 const notificationThresholdStep = 5
 
 const iconOptions: IconOption[] = [
@@ -106,6 +100,7 @@ const executableIconImages: Record<ExecutableIcon, string> = {
 const initialSnapshot: BatterySnapshot = {
   percentage: null,
   lastKnownPercentage: null,
+  charging: null,
   status: "sleeping",
   message: "Consultando o receptor USB…",
   updatedAt: Date.now(),
@@ -137,6 +132,19 @@ const statusPresentation: Record<BatteryStatus, { label: string; badge: string; 
     label: "Erro",
     badge: "border-red-500/25 bg-red-500/10 text-red-400",
     dot: "bg-red-400",
+  },
+}
+
+const powerPresentation = {
+  charging: {
+    label: "Carregando",
+    badge: "border-sky-500/25 bg-sky-500/10 text-sky-400",
+    dot: "bg-sky-400",
+  },
+  battery: {
+    label: "Na bateria",
+    badge: "border-foreground/15 bg-foreground/5 text-muted-foreground",
+    dot: "bg-muted-foreground",
   },
 }
 
@@ -185,7 +193,10 @@ export function App() {
   const [autostartEnabled, setAutostartEnabled] = useState(false)
   const [autostartBusy, setAutostartBusy] = useState(false)
   const [autostartStatus, setAutostartStatus] = useState("Consultando o Windows…")
-  const [notificationThreshold, setNotificationThreshold] = useState(defaultNotificationThreshold)
+  const [notificationThresholds, setNotificationThresholds] = useState([
+    defaultLowNotificationThreshold,
+    defaultHighNotificationThreshold,
+  ])
   const [notificationBusy, setNotificationBusy] = useState(false)
   const [notificationStatus, setNotificationStatus] = useState("Consultando o limite…")
   const [, setClock] = useState(0)
@@ -201,14 +212,14 @@ export function App() {
   }, [level])
 
   const refresh = useCallback(async () => {
-    if (!isTauri()) return
+    if (!runningInTauri) return
     setRefreshing(true)
     try {
       setSnapshot(await invoke<BatterySnapshot>("refresh_battery"))
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [runningInTauri])
 
   const toggleAutostart = useCallback(async () => {
     if (!runningInTauri || autostartBusy) return
@@ -226,18 +237,27 @@ export function App() {
     }
   }, [autostartBusy, autostartEnabled, runningInTauri])
 
-  const updateNotificationThreshold = useCallback(
-    async (threshold: number) => {
+  const updateNotificationThresholds = useCallback(
+    async ([lowThreshold, highThreshold]: number[]) => {
       if (!runningInTauri || notificationBusy) return
       setNotificationBusy(true)
       try {
-        const settings = await invoke<LowBatterySettings>("set_low_battery_threshold", {
-          threshold,
+        const settings = await invoke<BatteryAlertSettings>("set_battery_alert_thresholds", {
+          lowThreshold,
+          highThreshold,
         })
-        setNotificationThreshold(settings.threshold)
-        setNotificationStatus(`Notificar em ${settings.threshold}% ou menos`)
+        setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
+        setNotificationStatus(
+          `Descarregando em ${settings.lowThreshold}% · carregando em ${settings.highThreshold}%`,
+        )
       } catch {
-        setNotificationStatus("Não foi possível salvar o limite")
+        setNotificationStatus("Não foi possível salvar os limites")
+        try {
+          const settings = await invoke<BatteryAlertSettings>("get_battery_alert_settings")
+          setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
+        } catch {
+          // Mantém os valores visíveis se também não for possível reler a configuração.
+        }
       } finally {
         setNotificationBusy(false)
       }
@@ -271,14 +291,16 @@ export function App() {
           if (!disposed) setAutostartStatus("Estado indisponível")
         })
 
-      void invoke<LowBatterySettings>("get_low_battery_settings")
+      void invoke<BatteryAlertSettings>("get_battery_alert_settings")
         .then((settings) => {
           if (disposed) return
-          setNotificationThreshold(settings.threshold)
-          setNotificationStatus(`Notificar em ${settings.threshold}% ou menos`)
+          setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
+          setNotificationStatus(
+            `Descarregando em ${settings.lowThreshold}% · carregando em ${settings.highThreshold}%`,
+          )
         })
         .catch(() => {
-          if (!disposed) setNotificationStatus("Limite indisponível")
+          if (!disposed) setNotificationStatus("Limites indisponíveis")
         })
     }
     void refresh()
@@ -290,6 +312,14 @@ export function App() {
       window.clearInterval(timer)
     }
   }, [refresh, runningInTauri])
+
+  useEffect(() => {
+    if (!runningInTauri) {
+      setAutostartStatus("Disponível apenas no app desktop")
+      setNotificationStatus("Disponível apenas no app desktop")
+      setIconStatus("Disponível apenas no app desktop")
+    }
+  }, [runningInTauri])
 
   useEffect(() => {
     window.localStorage.setItem(automaticIconStorageKey, String(automaticIcon))
@@ -336,9 +366,16 @@ export function App() {
         </div>
       </header>
 
-      <BatteryCard snapshot={snapshot} level={shownLevel} meterClass={meterClass} />
+      <BatteryCard
+        snapshot={snapshot}
+        level={shownLevel}
+        meterClass={meterClass}
+        refreshing={refreshing}
+        canRefresh={runningInTauri}
+        onRefresh={() => void refresh()}
+      />
 
-      <Card size="sm" className="gap-0 py-0 shadow-none">
+      <Card size="sm" className="shrink-0 gap-0 py-0 shadow-none">
         <CardContent className="px-3">
           <Detail icon={Usb} label="Conexão" value="Receptor USB" />
           <Separator />
@@ -349,15 +386,16 @@ export function App() {
             label="Iniciar com o Windows"
             description={autostartBusy ? "Atualizando…" : autostartStatus}
             enabled={autostartEnabled}
-            busy={autostartBusy}
+            busy={autostartBusy || !runningInTauri}
             onToggle={() => void toggleAutostart()}
           />
           <Separator />
           <ThresholdSettingRow
-            threshold={notificationThreshold}
+            thresholds={notificationThresholds}
             description={notificationBusy ? "Salvando…" : notificationStatus}
-            busy={notificationBusy}
-            onChange={(threshold) => void updateNotificationThreshold(threshold)}
+            busy={notificationBusy || !runningInTauri}
+            onChange={setNotificationThresholds}
+            onCommit={(thresholds) => void updateNotificationThresholds(thresholds)}
           />
         </CardContent>
       </Card>
@@ -367,6 +405,7 @@ export function App() {
         selected={manualIcon}
         busy={iconBusy}
         status={iconStatus}
+        available={runningInTauri}
         onAutomaticChange={setAutomaticIcon}
         onSelect={setManualIcon}
       />
@@ -374,15 +413,19 @@ export function App() {
       <Button
         type="button"
         size="lg"
-        disabled={refreshing}
+        disabled={refreshing || !runningInTauri}
         onClick={() => void refresh()}
-        className="h-10 w-full"
+        className="h-10 w-full shrink-0"
       >
         <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
-        {refreshing ? "Atualizando…" : "Atualizar agora"}
+        {refreshing
+          ? "Atualizando…"
+          : runningInTauri
+            ? "Atualizar agora"
+            : "Disponível apenas no app desktop"}
       </Button>
 
-      <p className="text-center text-[11px] text-muted-foreground/65">
+      <p className="text-center text-xs text-muted-foreground/65">
         Fechar a janela mantém o monitor na bandeja.
       </p>
     </main>
@@ -393,34 +436,39 @@ function BatteryCard({
   snapshot,
   level,
   meterClass,
+  refreshing,
+  canRefresh,
+  onRefresh,
 }: {
   snapshot: BatterySnapshot
   level: number | null
   meterClass: string
+  refreshing: boolean
+  canRefresh: boolean
+  onRefresh: () => void
 }) {
-  const presentation = statusPresentation[snapshot.status]
+  const presentation =
+    snapshot.status === "available" && snapshot.charging !== null
+      ? powerPresentation[snapshot.charging ? "charging" : "battery"]
+      : statusPresentation[snapshot.status]
 
   return (
-    <Card className="gap-0 py-0 shadow-none" aria-live="polite">
+    <Card className="shrink-0 gap-0 py-0 shadow-none">
       <CardHeader className="border-b py-3.5">
         <CardTitle className="flex items-center gap-2 text-sm">
           <BatteryCharging className="size-4 text-muted-foreground" />
           Nível da bateria
         </CardTitle>
-        <CardDescription className="text-xs">
-          {snapshot.percentage === null && snapshot.lastKnownPercentage !== null
-            ? "Última leitura conhecida"
-            : "Leitura atual do receptor"}
-        </CardDescription>
+        <CardDescription className="text-xs">{batterySourceLabel(snapshot)}</CardDescription>
         <CardAction>
-          <Badge variant="outline" className={cn("gap-1.5", presentation.badge)}>
+          <Badge variant="outline" className={cn("gap-1.5", presentation.badge)} aria-live="polite">
             <span className={cn("size-1.5 rounded-full", presentation.dot)} />
             {presentation.label}
           </Badge>
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-4 py-4">
-        <div className="flex items-end justify-between gap-4">
+        <div className="flex items-end justify-between gap-4" aria-live="polite">
           <div className="flex items-baseline">
             <span className="text-5xl leading-none font-semibold tracking-[-0.055em] tabular-nums">
               {level ?? "—"}
@@ -431,15 +479,47 @@ function BatteryCard({
             {level === null ? "Indisponível" : batteryLabel(level)}
           </span>
         </div>
-        <Progress
-          value={level ?? 0}
-          aria-label={level === null ? "Bateria indisponível" : `Bateria em ${level}%`}
-          className={cn("h-2", meterClass, level === null && "opacity-40")}
-        />
+        {level === null ? (
+          <div
+            className="flex h-2 items-center overflow-hidden rounded-full bg-muted-foreground/15"
+            role="progressbar"
+            aria-label="Bateria indisponível"
+          >
+            <span className="h-full w-1/3 animate-pulse rounded-full bg-muted-foreground/40" />
+          </div>
+        ) : (
+          <Progress
+            value={level}
+            aria-label={`Bateria em ${level}%`}
+            className={cn("h-2", meterClass)}
+          />
+        )}
         <p className="min-h-8 text-xs leading-4 text-muted-foreground">{snapshot.message}</p>
+        {snapshot.status === "sleeping" && level === null && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canRefresh || refreshing}
+            onClick={onRefresh}
+            className="w-full"
+          >
+            <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+            {canRefresh ? "Acordar e atualizar" : "Atualização no app desktop"}
+          </Button>
+        )}
       </CardContent>
     </Card>
   )
+}
+
+function batterySourceLabel(snapshot: BatterySnapshot): string {
+  if (snapshot.percentage === null && snapshot.lastKnownPercentage !== null) {
+    return "Última leitura conhecida"
+  }
+  if (snapshot.charging === true) return "Cabo USB conectado"
+  if (snapshot.charging === false) return "Funcionando pela bateria"
+  return "Leitura atual do receptor"
 }
 
 function batteryLabel(level: number): string {
@@ -480,7 +560,7 @@ function SettingRow({
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <span className="block text-xs text-foreground">{label}</span>
-        <span className="block truncate text-[11px] text-muted-foreground" title={description}>
+        <span className="block truncate text-xs text-muted-foreground" title={description}>
           {description}
         </span>
       </div>
@@ -490,53 +570,55 @@ function SettingRow({
 }
 
 function ThresholdSettingRow({
-  threshold,
+  thresholds,
   description,
   busy,
   onChange,
+  onCommit,
 }: {
-  threshold: number
+  thresholds: number[]
   description: string
   busy: boolean
-  onChange: (threshold: number) => void
+  onChange: (thresholds: number[]) => void
+  onCommit: (thresholds: number[]) => void
 }) {
+  const [lowThreshold, highThreshold] = thresholds
+
   return (
-    <div className="flex min-h-13 items-center gap-2.5 py-2">
-      <BellRing className="size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <span className="block text-xs text-foreground">Alerta de bateria baixa</span>
-        <span className="block truncate text-[11px] text-muted-foreground" title={description}>
-          {description}
-        </span>
+    <div className="space-y-3 py-3">
+      <div className="flex items-center gap-2.5">
+        <BellRing className="size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <span className="block text-xs text-foreground">Alertas de bateria</span>
+          <span className="block truncate text-xs text-muted-foreground" title={description}>
+            {description}
+          </span>
+        </div>
       </div>
-      <fieldset
-        className="m-0 flex shrink-0 items-center gap-1 border-0 p-0"
-        aria-label="Limite do alerta"
-      >
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-xs"
-          disabled={busy || threshold <= minNotificationThreshold}
-          aria-label="Diminuir limite do alerta"
-          onClick={() => onChange(threshold - notificationThresholdStep)}
-        >
-          <Minus />
-        </Button>
-        <output className="min-w-9 text-center text-xs font-medium tabular-nums">
-          {threshold}%
-        </output>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-xs"
-          disabled={busy || threshold >= maxNotificationThreshold}
-          aria-label="Aumentar limite do alerta"
-          onClick={() => onChange(threshold + notificationThresholdStep)}
-        >
-          <Plus />
-        </Button>
-      </fieldset>
+      <div className="px-1">
+        <Slider
+          value={thresholds}
+          min={minNotificationThreshold}
+          max={maxNotificationThreshold}
+          step={notificationThresholdStep}
+          minStepsBetweenThumbs={1}
+          disabled={busy}
+          thumbLabels={["Alerta ao descarregar", "Alerta ao carregar"]}
+          onValueChange={onChange}
+          onValueCommit={onCommit}
+        />
+        <div className="mt-2 flex justify-between gap-4 text-xs">
+          <span className="text-muted-foreground">
+            Descarregou até <strong className="font-medium text-foreground">{lowThreshold}%</strong>
+          </span>
+          <span className="text-right text-muted-foreground">
+            Carregou até <strong className="font-medium text-foreground">{highThreshold}%</strong>
+          </span>
+        </div>
+        <p className="mt-2 text-xs leading-4 text-muted-foreground/75">
+          Estes limites apenas avisam; não interrompem a carga do mouse.
+        </p>
+      </div>
     </div>
   )
 }
@@ -546,6 +628,7 @@ function IconSettings({
   selected,
   busy,
   status,
+  available,
   onAutomaticChange,
   onSelect,
 }: {
@@ -553,23 +636,31 @@ function IconSettings({
   selected: ManualIcon
   busy: boolean
   status: string
+  available: boolean
   onAutomaticChange: (checked: boolean) => void
   onSelect: (icon: ManualIcon) => void
 }) {
-  const visibleStatus = busy ? "Aplicando ícone…" : status
+  const visibleStatus = !available
+    ? "Disponível apenas no app desktop"
+    : busy
+      ? "Aplicando ícone…"
+      : status
 
   return (
-    <Card size="sm" className="gap-0 py-0 shadow-none">
+    <Card size="sm" className="shrink-0 gap-0 py-0 shadow-none">
       <CardHeader className="border-b py-3">
         <CardTitle className="flex items-center gap-2 text-sm">
           <Palette className="size-4 text-muted-foreground" />
           Ícone do aplicativo
         </CardTitle>
-        <CardDescription className="text-xs">Acompanhar o nível da bateria</CardDescription>
-        <CardAction>
+        <CardDescription className="text-xs">
+          {available ? "Acompanhar o nível da bateria" : "Disponível apenas no app desktop"}
+        </CardDescription>
+        <CardAction className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Automático</span>
           <Switch
             checked={automatic}
-            disabled={busy}
+            disabled={busy || !available}
             aria-label="Sincronizar o ícone com a bateria"
             onCheckedChange={onAutomaticChange}
           />
@@ -588,7 +679,7 @@ function IconSettings({
                     variant="ghost"
                     aria-label={`Usar ícone ${option.label}`}
                     aria-pressed={active}
-                    disabled={automatic || busy}
+                    disabled={automatic || busy || !available}
                     onClick={() => onSelect(option.value)}
                     className={cn(
                       "h-auto min-w-0 flex-col gap-1 rounded-lg border border-transparent px-1 py-1.5",
@@ -601,7 +692,7 @@ function IconSettings({
                       className="size-8 rounded-md"
                       draggable={false}
                     />
-                    <span className="max-w-full truncate text-[9px] font-normal">
+                    <span className="max-w-full truncate text-[11px] font-normal">
                       {option.label}
                     </span>
                   </Button>
@@ -614,7 +705,7 @@ function IconSettings({
           })}
         </div>
         <p
-          className="mt-2 truncate text-center text-[11px] text-muted-foreground"
+          className="mt-2 truncate text-center text-xs text-muted-foreground"
           title={visibleStatus}
         >
           {visibleStatus}

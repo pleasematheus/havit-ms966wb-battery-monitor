@@ -9,13 +9,14 @@ oficial da Havit, de Python ou de drivers adicionais.
 ## Recursos
 
 - porcentagem exata no menu e no tooltip do tray;
+- indicação em tempo real de carregamento pelo cabo USB;
 - ícone dinâmico com nível e cor da bateria;
 - sincronização opcional dos ícones do `hmbm.exe`, da janela e da barra de tarefas
   com a faixa da bateria;
 - escolha manual entre ícones original, galáctico, monocromático, minimalista e mítico;
 - opção para iniciar oculto junto com o Windows;
 - instância única: abrir novamente apenas traz a janela existente para frente;
-- notificação nativa do Windows com limite ajustável entre 5% e 50%, sem alertas repetidos;
+- notificações nativas com limites inferior e superior ajustáveis, sem alertas repetidos;
 - atualização automática a cada 60 segundos;
 - atualização manual pelo tray ou pela janela;
 - mantém a última leitura quando o mouse entra em suspensão;
@@ -122,12 +123,14 @@ na bandeja. O plugin de instância única impede que o autostart, um atalho ou u
 segunda abertura criem dois monitores simultâneos; nesse caso, a janela da
 instância existente é exibida e recebe foco.
 
-O alerta de bateria baixa é enviado pelo monitor em segundo plano quando uma
-leitura atual chega ao limite escolhido. O valor padrão é 20% e pode ser ajustado
-entre 5% e 50% pela janela do aplicativo. A preferência é persistida no Windows,
-inclusive para a inicialização oculta. O aviso é exibido uma vez por ciclo de carga
-e só é rearmado depois que o nível volta a ficar acima do limite; leituras antigas
-mantidas durante a suspensão do mouse não geram notificações.
+Os alertas de bateria são enviados pelo monitor em segundo plano quando uma leitura
+atual chega a um dos limites escolhidos no slider duplo. Por padrão, o aplicativo
+avisa ao descarregar até 20% e ao carregar até 80%; ambos podem ser ajustados em
+passos de 5%. A preferência é persistida no Windows, inclusive para a inicialização
+oculta. Cada aviso é exibido uma vez por ciclo completo: o superior só é armado
+depois de uma leitura abaixo dele, e cada extremo é rearmado ao alcançar o extremo
+oposto. Leituras antigas mantidas durante a suspensão do mouse não geram
+notificações.
 
 No Windows, notificações nativas são associadas corretamente ao aplicativo
 instalado. Durante o desenvolvimento, o sistema pode exibir o nome e o ícone do
@@ -148,6 +151,7 @@ A leitura usa um relatório de 64 bytes na coleção privada do receptor:
 | Endereço | `0x0000` | estado de energia |
 | Byte 32 | `0x02` | rota do dispositivo sem fio |
 | Resposta, byte 8 | `0–100` | porcentagem da bateria |
+| Resposta, byte 9 | `0x00` / `0x01` | usando a bateria / carregando pelo cabo |
 
 O aplicativo envia apenas essa consulta de leitura. Ele não altera DPI, RGB,
 perfis, firmware ou qualquer outra configuração do mouse.
