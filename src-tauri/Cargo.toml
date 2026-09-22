@@ -1,6 +1,6 @@
 [package]
 name = "havit-ms966wb-battery-monitor"
-version = "1.0.0"
+version = "1.0.1"
 description = "Windows battery monitor for the Havit MS966WB wireless mouse"
 edition = "2024"
 license = "MIT"
