@@ -81,8 +81,8 @@ nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
 ## Ícone alternativo do executável
 
-A opção **Ícone do executável** usa os crates locais `alt-icons` e
-`alt-icons-build` para aplicar a variante escolhida ao próprio `hmbm.exe`.
+A opção **Ícone do executável** usa o crate `alt-icons` do crates.io.
+O build script declara as variantes e aplica a versão padrão ao próprio `hmbm.exe`.
 No modo automático, ela acompanha estas três faixas:
 
 - verde para carga acima de 40%;
@@ -165,7 +165,7 @@ perfis, firmware ou qualquer outra configuração do mouse.
 - Bun + Vite
 - Biome
 - `hidapi`
-- `alt-icons` e `alt-icons-build` incorporados em `crates/`
+- `alt-icons` publicado no crates.io
 
 ## Aviso
 

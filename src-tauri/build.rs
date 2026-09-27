@@ -1,5 +1,5 @@
 fn main() {
-    alt_icons_build::configure(&[
+    alt_icons::build::configure(&[
         ("Default", "icons/icon.ico"),
         ("Warning", "icons/alternate/warning.ico"),
         ("Critical", "icons/alternate/critical.ico"),
