@@ -81,7 +81,8 @@ nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
 ## Ícone alternativo do executável
 
-A opção **Ícone do executável** usa o crate `alt-icons` do crates.io.
+A opção **Ícone do executável** usa o crate `alt-icons` versão `1.2.0` do crates.io,
+tanto no runtime quanto no build, com limpeza automática dos arquivos `.old`.
 O build script declara as variantes e aplica a versão padrão ao próprio `hmbm.exe`.
 No modo automático, ela acompanha estas três faixas:
 
@@ -115,6 +116,27 @@ Para diagnóstico, uma variante também pode ser aplicada sem abrir a interface:
 .\hmbm.exe --set-icon mythic
 .\hmbm.exe --set-icon default
 ```
+
+### Testar a limpeza automática
+
+Compile o executável com a dependência publicada:
+
+```powershell
+bun run build --no-bundle
+```
+
+Execute `src-tauri/target/release/hmbm.exe`, escolha um ícone diferente e observe o
+arquivo `hmbm.exe.<pid>-<contador>.old` na mesma pasta. Encerre o aplicativo pela
+opção **Sair** da bandeja: o `.old` deve desaparecer após alguns segundos, sem abrir
+o aplicativo novamente. Fechar apenas a janela mantém o processo na bandeja e o
+arquivo antigo continua em uso. Encerre outra instância já aberta do monitor antes
+de iniciar o executável de testes, pois o aplicativo permite apenas uma instância.
+
+A inicialização existente com `alt_icons::init()` habilita a limpeza por padrão.
+Para testar a preservação, substitua essa chamada por
+`alt_icons::init_with_options(alt_icons::Options { cleanup_old: false })` e
+recompile. O auxiliar usa Windows PowerShell oculto; se a política do sistema o
+bloquear, a próxima inicialização tenta novamente a limpeza.
 
 ## Integração com o Windows
 

@@ -34,10 +34,11 @@ dependencies = [
 
 [[package]]
 name = "alt-icons"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "161e7c0e091003bc52a27b45ba92c749d798c2a22deac584c30ed38cc6114311"
+checksum = "fd867cf46388fc217e790fbadd6418f9f8bccd21ec4755504843c9ebebadf561"
 dependencies = [
+ "base64 0.22.1",
  "embed-resource",
  "windows-sys 0.60.2",
 ]

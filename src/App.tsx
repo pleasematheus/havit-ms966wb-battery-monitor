@@ -357,7 +357,7 @@ export function App() {
   }, [automaticIcon, manualIcon, runningInTauri, shownLevel])
 
   return (
-    <main className="app-scroll flex h-screen min-w-[360px] flex-col gap-3 overflow-y-auto bg-background p-5 text-foreground">
+    <main className="app-scroll flex h-screen min-w-90 flex-col gap-3 overflow-y-auto bg-background p-5 text-foreground">
       <header className="flex items-center gap-3 px-0.5 py-0.5">
         <AppLogo icon={activeIcon} />
         <div className="min-w-0 flex-1">
