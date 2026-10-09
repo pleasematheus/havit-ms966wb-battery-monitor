@@ -50,7 +50,14 @@ interface ExecutableIconResult {
   changed: boolean
 }
 
-interface BatteryAlertSettings {
+interface NotificationPreferences {
+  lowEnabled: boolean
+  highEnabled: boolean
+  chargingStartedEnabled: boolean
+  chargingStoppedEnabled: boolean
+}
+
+interface BatteryAlertSettings extends NotificationPreferences {
   lowThreshold: number
   highThreshold: number
 }
@@ -68,6 +75,12 @@ const defaultHighNotificationThreshold = 80
 const minNotificationThreshold = 5
 const maxNotificationThreshold = 100
 const notificationThresholdStep = 5
+const defaultNotificationPreferences: NotificationPreferences = {
+  lowEnabled: true,
+  highEnabled: true,
+  chargingStartedEnabled: true,
+  chargingStoppedEnabled: true,
+}
 
 const iconOptions: IconOption[] = [
   { value: "Default", label: "Original", image: defaultIcon },
@@ -198,7 +211,11 @@ export function App() {
     defaultHighNotificationThreshold,
   ])
   const [notificationBusy, setNotificationBusy] = useState(false)
-  const [notificationStatus, setNotificationStatus] = useState("Consultando o limite…")
+  const [notificationReady, setNotificationReady] = useState(false)
+  const [notificationPreferences, setNotificationPreferences] = useState(
+    defaultNotificationPreferences,
+  )
+  const [notificationStatus, setNotificationStatus] = useState("Consultando as notificações…")
   const [, setClock] = useState(0)
 
   const shownLevel = snapshot.percentage ?? snapshot.lastKnownPercentage
@@ -237,32 +254,72 @@ export function App() {
     }
   }, [autostartBusy, autostartEnabled, runningInTauri])
 
+  const applyNotificationSettings = useCallback((settings: BatteryAlertSettings) => {
+    setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
+    setNotificationPreferences({
+      lowEnabled: settings.lowEnabled,
+      highEnabled: settings.highEnabled,
+      chargingStartedEnabled: settings.chargingStartedEnabled,
+      chargingStoppedEnabled: settings.chargingStoppedEnabled,
+    })
+    setNotificationReady(true)
+  }, [])
+
   const updateNotificationThresholds = useCallback(
     async ([lowThreshold, highThreshold]: number[]) => {
-      if (!runningInTauri || notificationBusy) return
+      if (!runningInTauri || notificationBusy || !notificationReady) return
       setNotificationBusy(true)
       try {
         const settings = await invoke<BatteryAlertSettings>("set_battery_alert_thresholds", {
           lowThreshold,
           highThreshold,
         })
-        setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
-        setNotificationStatus(
-          `Descarregando em ${settings.lowThreshold}% · carregando em ${settings.highThreshold}%`,
-        )
+        applyNotificationSettings(settings)
+        setNotificationStatus("Limites salvos")
       } catch {
         setNotificationStatus("Não foi possível salvar os limites")
         try {
           const settings = await invoke<BatteryAlertSettings>("get_battery_alert_settings")
-          setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
+          applyNotificationSettings(settings)
         } catch {
-          // Mantém os valores visíveis se também não for possível reler a configuração.
+          setNotificationReady(false)
+          setNotificationStatus(
+            "Configurações indisponíveis. Reabra o monitor para tentar novamente.",
+          )
         }
       } finally {
         setNotificationBusy(false)
       }
     },
-    [notificationBusy, runningInTauri],
+    [applyNotificationSettings, notificationBusy, notificationReady, runningInTauri],
+  )
+
+  const updateNotificationPreference = useCallback(
+    async (key: keyof NotificationPreferences, enabled: boolean) => {
+      if (!runningInTauri || notificationBusy || !notificationReady) return
+      setNotificationBusy(true)
+      try {
+        const settings = await invoke<BatteryAlertSettings>(
+          "set_battery_notification_preferences",
+          {
+            notifications: { ...notificationPreferences, [key]: enabled },
+          },
+        )
+        applyNotificationSettings(settings)
+        setNotificationStatus("Preferências salvas")
+      } catch {
+        setNotificationStatus("Não foi possível salvar. Tente novamente.")
+      } finally {
+        setNotificationBusy(false)
+      }
+    },
+    [
+      applyNotificationSettings,
+      notificationBusy,
+      notificationPreferences,
+      notificationReady,
+      runningInTauri,
+    ],
   )
 
   useEffect(() => {
@@ -294,13 +351,14 @@ export function App() {
       void invoke<BatteryAlertSettings>("get_battery_alert_settings")
         .then((settings) => {
           if (disposed) return
-          setNotificationThresholds([settings.lowThreshold, settings.highThreshold])
-          setNotificationStatus(
-            `Descarregando em ${settings.lowThreshold}% · carregando em ${settings.highThreshold}%`,
-          )
+          applyNotificationSettings(settings)
+          setNotificationStatus("Preferências salvas neste computador")
         })
         .catch(() => {
-          if (!disposed) setNotificationStatus("Limites indisponíveis")
+          if (!disposed)
+            setNotificationStatus(
+              "Configurações indisponíveis. Reabra o monitor para tentar novamente.",
+            )
         })
     }
     void refresh()
@@ -311,7 +369,7 @@ export function App() {
       unlisten?.()
       window.clearInterval(timer)
     }
-  }, [refresh, runningInTauri])
+  }, [applyNotificationSettings, refresh, runningInTauri])
 
   useEffect(() => {
     if (!runningInTauri) {
@@ -357,7 +415,7 @@ export function App() {
   }, [automaticIcon, manualIcon, runningInTauri, shownLevel])
 
   return (
-    <main className="app-scroll flex h-screen min-w-[360px] flex-col gap-3 overflow-y-auto bg-background p-5 text-foreground">
+    <main className="app-scroll flex h-screen min-w-90 flex-col gap-3 overflow-y-auto bg-background p-5 text-foreground">
       <header className="flex items-center gap-3 px-0.5 py-0.5">
         <AppLogo icon={activeIcon} />
         <div className="min-w-0 flex-1">
@@ -389,16 +447,18 @@ export function App() {
             busy={autostartBusy || !runningInTauri}
             onToggle={() => void toggleAutostart()}
           />
-          <Separator />
-          <ThresholdSettingRow
-            thresholds={notificationThresholds}
-            description={notificationBusy ? "Salvando…" : notificationStatus}
-            busy={notificationBusy || !runningInTauri}
-            onChange={setNotificationThresholds}
-            onCommit={(thresholds) => void updateNotificationThresholds(thresholds)}
-          />
         </CardContent>
       </Card>
+
+      <NotificationSettings
+        thresholds={notificationThresholds}
+        preferences={notificationPreferences}
+        status={notificationBusy ? "Salvando…" : notificationStatus}
+        busy={notificationBusy || !notificationReady || !runningInTauri}
+        onChange={setNotificationThresholds}
+        onCommit={(thresholds) => void updateNotificationThresholds(thresholds)}
+        onToggle={(key, enabled) => void updateNotificationPreference(key, enabled)}
+      />
 
       <IconSettings
         automatic={automaticIcon}
@@ -560,66 +620,107 @@ function SettingRow({
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <span className="block text-xs text-foreground">{label}</span>
-        <span className="block truncate text-xs text-muted-foreground" title={description}>
-          {description}
-        </span>
+        <span className="block text-xs leading-4 text-muted-foreground">{description}</span>
       </div>
       <Switch checked={enabled} disabled={busy} aria-label={label} onCheckedChange={onToggle} />
     </div>
   )
 }
 
-function ThresholdSettingRow({
+function NotificationSettings({
   thresholds,
-  description,
+  preferences,
+  status,
   busy,
   onChange,
   onCommit,
+  onToggle,
 }: {
   thresholds: number[]
-  description: string
+  preferences: NotificationPreferences
+  status: string
   busy: boolean
   onChange: (thresholds: number[]) => void
   onCommit: (thresholds: number[]) => void
+  onToggle: (key: keyof NotificationPreferences, enabled: boolean) => void
 }) {
   const [lowThreshold, highThreshold] = thresholds
 
   return (
-    <div className="space-y-3 py-3">
-      <div className="flex items-center gap-2.5">
-        <BellRing className="size-3.5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <span className="block text-xs text-foreground">Alertas de bateria</span>
-          <span className="block truncate text-xs text-muted-foreground" title={description}>
-            {description}
-          </span>
-        </div>
-      </div>
-      <div className="px-1">
+    <Card size="sm" className="shrink-0 gap-0 py-0 shadow-none">
+      <CardHeader className="border-b py-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <BellRing className="size-4 text-muted-foreground" />
+          Notificações
+        </CardTitle>
+        <CardDescription className="text-xs">Escolha quais avisos deseja receber</CardDescription>
+      </CardHeader>
+      <CardContent className="px-3">
+        <SettingRow
+          icon={BellRing}
+          label="Bateria baixa"
+          description={`Avisar ao descarregar até ${lowThreshold}%`}
+          enabled={preferences.lowEnabled}
+          busy={busy}
+          onToggle={(enabled) => onToggle("lowEnabled", enabled)}
+        />
         <Slider
-          value={thresholds}
+          className="mb-3"
+          value={[lowThreshold]}
           min={minNotificationThreshold}
+          max={highThreshold - notificationThresholdStep}
+          step={notificationThresholdStep}
+          disabled={busy || !preferences.lowEnabled}
+          thumbLabels={["Limite de bateria baixa"]}
+          onValueChange={([value]) => onChange([value, highThreshold])}
+          onValueCommit={([value]) => onCommit([value, highThreshold])}
+        />
+        <Separator />
+        <SettingRow
+          icon={BellRing}
+          label="Limite de carga"
+          description={`Avisar ao atingir ${highThreshold}%`}
+          enabled={preferences.highEnabled}
+          busy={busy}
+          onToggle={(enabled) => onToggle("highEnabled", enabled)}
+        />
+        <Slider
+          className="mb-3"
+          value={[highThreshold]}
+          min={lowThreshold + notificationThresholdStep}
           max={maxNotificationThreshold}
           step={notificationThresholdStep}
-          minStepsBetweenThumbs={1}
-          disabled={busy}
-          thumbLabels={["Alerta ao descarregar", "Alerta ao carregar"]}
-          onValueChange={onChange}
-          onValueCommit={onCommit}
+          disabled={busy || !preferences.highEnabled}
+          thumbLabels={["Limite de carga"]}
+          onValueChange={([value]) => onChange([lowThreshold, value])}
+          onValueCommit={([value]) => onCommit([lowThreshold, value])}
         />
-        <div className="mt-2 flex justify-between gap-4 text-xs">
-          <span className="text-muted-foreground">
-            Descarregou até <strong className="font-medium text-foreground">{lowThreshold}%</strong>
-          </span>
-          <span className="text-right text-muted-foreground">
-            Carregou até <strong className="font-medium text-foreground">{highThreshold}%</strong>
-          </span>
-        </div>
-        <p className="mt-2 text-xs leading-4 text-muted-foreground/75">
-          Estes limites apenas avisam; não interrompem a carga do mouse.
+        <Separator />
+        <SettingRow
+          icon={BatteryCharging}
+          label="Início do carregamento"
+          description="Avisar quando o mouse começar a carregar"
+          enabled={preferences.chargingStartedEnabled}
+          busy={busy}
+          onToggle={(enabled) => onToggle("chargingStartedEnabled", enabled)}
+        />
+        <Separator />
+        <SettingRow
+          icon={Power}
+          label="Fim do carregamento"
+          description="Avisar quando o mouse voltar a usar a bateria"
+          enabled={preferences.chargingStoppedEnabled}
+          busy={busy}
+          onToggle={(enabled) => onToggle("chargingStoppedEnabled", enabled)}
+        />
+        <p className="py-2 text-xs leading-4 text-muted-foreground">
+          Os limites apenas avisam; não interrompem a carga do mouse.
         </p>
-      </div>
-    </div>
+        <p className="pb-3 text-xs leading-4 text-muted-foreground" role="status">
+          {status}
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 

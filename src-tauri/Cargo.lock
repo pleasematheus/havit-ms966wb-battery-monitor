@@ -34,10 +34,11 @@ dependencies = [
 
 [[package]]
 name = "alt-icons"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "161e7c0e091003bc52a27b45ba92c749d798c2a22deac584c30ed38cc6114311"
+checksum = "fd867cf46388fc217e790fbadd6418f9f8bccd21ec4755504843c9ebebadf561"
 dependencies = [
+ "base64 0.22.1",
  "embed-resource",
  "windows-sys 0.60.2",
 ]
@@ -1491,11 +1492,12 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "havit-ms966wb-battery-monitor"
-version = "1.0.4"
+version = "1.2.1"
 dependencies = [
  "alt-icons",
  "hidapi",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -3799,7 +3801,7 @@ dependencies = [
  "serde_with",
  "swift-rs",
  "thiserror 2.0.20",
- "toml 1.1.6+spec-1.1.0",
+ "toml 0.9.12+spec-1.1.0",
  "url",
  "urlpattern",
  "uuid",

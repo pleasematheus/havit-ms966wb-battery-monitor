@@ -1,5 +1,5 @@
 use hidapi::HidApi;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     sync::Mutex,
@@ -92,12 +92,40 @@ enum BatteryAlert {
     High { level: u8, threshold: u8 },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ChargingAlert {
+    Started,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+struct NotificationPreferences {
+    low_enabled: bool,
+    high_enabled: bool,
+    charging_started_enabled: bool,
+    charging_stopped_enabled: bool,
+}
+
+impl Default for NotificationPreferences {
+    fn default() -> Self {
+        Self {
+            low_enabled: true,
+            high_enabled: true,
+            charging_started_enabled: true,
+            charging_stopped_enabled: true,
+        }
+    }
+}
+
 struct BatteryAlertState {
     low_threshold: u8,
     high_threshold: u8,
     low_armed: bool,
     high_armed: bool,
     initialized: bool,
+    last_charging: Option<bool>,
+    notifications: NotificationPreferences,
 }
 
 impl BatteryAlertState {
@@ -108,7 +136,36 @@ impl BatteryAlertState {
             low_armed: true,
             high_armed: false,
             initialized: false,
+            last_charging: None,
+            notifications: NotificationPreferences::default(),
         }
+    }
+
+    fn observe_charging(&mut self, charging: Option<bool>) -> Option<ChargingAlert> {
+        let charging = charging?;
+        let previous = self.last_charging.replace(charging);
+        match (previous, charging) {
+            (Some(false), true) => Some(ChargingAlert::Started),
+            (Some(true), false) => Some(ChargingAlert::Stopped),
+            _ => None,
+        }
+    }
+
+    fn observe_notifications(
+        &mut self,
+        percentage: Option<u8>,
+        charging: Option<bool>,
+    ) -> (Option<BatteryAlert>, Option<ChargingAlert>) {
+        // Atualiza o estado mesmo com avisos desativados para não repetir eventos antigos.
+        let battery = self.observe(percentage).filter(|alert| match alert {
+            BatteryAlert::Low { .. } => self.notifications.low_enabled,
+            BatteryAlert::High { .. } => self.notifications.high_enabled,
+        });
+        let charging = self.observe_charging(charging).filter(|alert| match alert {
+            ChargingAlert::Started => self.notifications.charging_started_enabled,
+            ChargingAlert::Stopped => self.notifications.charging_stopped_enabled,
+        });
+        (battery, charging)
     }
 
     fn observe(&mut self, percentage: Option<u8>) -> Option<BatteryAlert> {
@@ -148,6 +205,7 @@ impl BatteryAlertState {
         BatteryAlertSettings {
             low_threshold: self.low_threshold,
             high_threshold: self.high_threshold,
+            notifications: self.notifications,
         }
     }
 
@@ -165,18 +223,22 @@ struct BatteryAlertNotifier {
 }
 
 impl BatteryAlertNotifier {
-    fn new(low_threshold: u8, high_threshold: u8) -> Self {
+    fn new(settings: BatteryAlertSettings) -> Self {
+        let mut state = BatteryAlertState::new(settings.low_threshold, settings.high_threshold);
+        state.notifications = settings.notifications;
         Self {
-            state: Mutex::new(BatteryAlertState::new(low_threshold, high_threshold)),
+            state: Mutex::new(state),
         }
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct BatteryAlertSettings {
     low_threshold: u8,
     high_threshold: u8,
+    #[serde(flatten)]
+    notifications: NotificationPreferences,
 }
 
 struct TrayItems {
@@ -253,6 +315,11 @@ fn low_battery_threshold_path(app: &AppHandle) -> Result<std::path::PathBuf, Str
 
 fn parse_battery_thresholds(value: &str) -> Option<BatteryAlertSettings> {
     let value = value.trim();
+    if value.starts_with('{') {
+        let settings: BatteryAlertSettings = serde_json::from_str(value).ok()?;
+        return valid_battery_thresholds(settings.low_threshold, settings.high_threshold)
+            .then_some(settings);
+    }
     let (low_threshold, high_threshold) = match value.split_once(',') {
         Some((low, high)) => (low.trim().parse().ok()?, high.trim().parse().ok()?),
         None => (value.parse().ok()?, DEFAULT_HIGH_BATTERY_THRESHOLD),
@@ -261,6 +328,7 @@ fn parse_battery_thresholds(value: &str) -> Option<BatteryAlertSettings> {
     valid_battery_thresholds(low_threshold, high_threshold).then_some(BatteryAlertSettings {
         low_threshold,
         high_threshold,
+        notifications: NotificationPreferences::default(),
     })
 }
 
@@ -268,6 +336,7 @@ fn default_battery_alert_settings() -> BatteryAlertSettings {
     BatteryAlertSettings {
         low_threshold: DEFAULT_LOW_BATTERY_THRESHOLD,
         high_threshold: DEFAULT_HIGH_BATTERY_THRESHOLD,
+        notifications: NotificationPreferences::default(),
     }
 }
 
@@ -296,8 +365,7 @@ fn load_battery_alert_settings(app: &AppHandle) -> BatteryAlertSettings {
 
 fn save_battery_alert_settings(
     app: &AppHandle,
-    low_threshold: u8,
-    high_threshold: u8,
+    settings: BatteryAlertSettings,
 ) -> Result<(), String> {
     let path = low_battery_threshold_path(app)?;
     let directory = path
@@ -305,8 +373,10 @@ fn save_battery_alert_settings(
         .ok_or_else(|| "caminho de configurações inválido".to_string())?;
     fs::create_dir_all(directory)
         .map_err(|error| format!("não foi possível criar a pasta de configurações: {error}"))?;
-    fs::write(path, format!("{low_threshold},{high_threshold}"))
-        .map_err(|error| format!("não foi possível salvar os limites de bateria: {error}"))
+    let value = serde_json::to_string(&settings)
+        .map_err(|error| format!("não foi possível preparar as configurações: {error}"))?;
+    fs::write(path, value)
+        .map_err(|error| format!("não foi possível salvar as notificações: {error}"))
 }
 
 fn make_read_request() -> [u8; REPORT_LENGTH] {
@@ -463,18 +533,34 @@ async fn refresh_and_publish(app: AppHandle) -> BatterySnapshot {
     *store.snapshot.lock().unwrap() = snapshot.clone();
 
     update_tray(&app, &snapshot);
-    notify_battery_alert(&app, snapshot.percentage);
+    notify_battery_alert(&app, &snapshot);
     let _ = app.emit("battery-updated", snapshot.clone());
     snapshot
 }
 
-fn notify_battery_alert(app: &AppHandle, percentage: Option<u8>) {
+fn notify_battery_alert(app: &AppHandle, snapshot: &BatterySnapshot) {
     let notifier = app.state::<BatteryAlertNotifier>();
-    let alert = notifier
-        .state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .observe(percentage);
+    let (alert, charging_alert) = {
+        let mut state = notifier
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.observe_notifications(snapshot.percentage, snapshot.charging)
+    };
+
+    if let Some(charging_alert) = charging_alert {
+        let (title, body) = match charging_alert {
+            ChargingAlert::Started => (
+                "Havit MS966WB carregando",
+                "O mouse começou a carregar pelo cabo USB.",
+            ),
+            ChargingAlert::Stopped => (
+                "Havit MS966WB na bateria",
+                "O mouse saiu do modo de carregamento e está usando a bateria.",
+            ),
+        };
+        show_battery_notification(app, title, body);
+    }
 
     let Some(alert) = alert else {
         return;
@@ -493,6 +579,10 @@ fn notify_battery_alert(app: &AppHandle, percentage: Option<u8>) {
         ),
     };
 
+    show_battery_notification(app, title, &body);
+}
+
+fn show_battery_notification(app: &AppHandle, title: &str, body: &str) {
     if let Err(error) = app.notification().builder().title(title).body(body).show() {
         eprintln!("não foi possível exibir a notificação de bateria: {error}");
     }
@@ -500,6 +590,7 @@ fn notify_battery_alert(app: &AppHandle, percentage: Option<u8>) {
 
 fn tray_label(snapshot: &BatterySnapshot) -> String {
     match (snapshot.percentage, snapshot.last_known_percentage) {
+        (Some(level), _) if snapshot.charging == Some(true) => format!("Carregando: {level}%"),
         (Some(level), _) => format!("Bateria: {level}%"),
         (None, Some(level)) => format!("Mouse dormindo · última leitura: {level}%"),
         (None, None) => match snapshot.status {
@@ -620,15 +711,35 @@ fn set_battery_alert_thresholds(
         ));
     }
 
-    save_battery_alert_settings(&app, low_threshold, high_threshold)?;
     let settings = {
         let mut alert = state
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let mut settings = alert.settings();
+        settings.low_threshold = low_threshold;
+        settings.high_threshold = high_threshold;
+        save_battery_alert_settings(&app, settings)?;
         alert.set_thresholds(low_threshold, high_threshold);
         alert.settings()
     };
+    Ok(settings)
+}
+
+#[tauri::command]
+fn set_battery_notification_preferences(
+    app: AppHandle,
+    state: State<'_, BatteryAlertNotifier>,
+    notifications: NotificationPreferences,
+) -> Result<BatteryAlertSettings, String> {
+    let mut alert = state
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut settings = alert.settings();
+    settings.notifications = notifications;
+    save_battery_alert_settings(&app, settings)?;
+    alert.notifications = notifications;
     Ok(settings)
 }
 
@@ -874,14 +985,12 @@ pub fn run() {
             refresh_battery,
             get_battery_alert_settings,
             set_battery_alert_thresholds,
+            set_battery_notification_preferences,
             set_executable_icon_preference
         ])
         .setup(move |app| {
             let settings = load_battery_alert_settings(app.handle());
-            app.manage(BatteryAlertNotifier::new(
-                settings.low_threshold,
-                settings.high_threshold,
-            ));
+            app.manage(BatteryAlertNotifier::new(settings));
 
             let status = MenuItem::with_id(
                 app,
@@ -1023,6 +1132,201 @@ mod tests {
                 level: 82,
                 threshold: 80
             })
+        );
+    }
+
+    #[test]
+    fn charging_alert_fires_once_for_each_transition() {
+        let mut state = BatteryAlertState::new(20, 80);
+
+        assert_eq!(state.observe_charging(Some(false)), None);
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+        assert_eq!(state.observe_charging(Some(true)), None);
+        assert_eq!(
+            state.observe_charging(Some(false)),
+            Some(ChargingAlert::Stopped)
+        );
+        assert_eq!(state.observe_charging(Some(false)), None);
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+    }
+
+    #[test]
+    fn unavailable_readings_do_not_reset_the_charging_alert() {
+        let mut state = BatteryAlertState::new(20, 80);
+
+        assert_eq!(state.observe_charging(None), None);
+        assert_eq!(state.observe_charging(Some(false)), None);
+        assert_eq!(state.observe_charging(None), None);
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+        assert_eq!(state.observe_charging(None), None);
+        assert_eq!(state.observe_charging(Some(true)), None);
+        assert_eq!(state.observe_charging(None), None);
+        assert_eq!(
+            state.observe_charging(Some(false)),
+            Some(ChargingAlert::Stopped)
+        );
+    }
+
+    #[test]
+    fn starting_the_monitor_while_charging_does_not_report_a_new_cycle() {
+        let mut state = BatteryAlertState::new(20, 80);
+
+        assert_eq!(state.observe_charging(Some(true)), None);
+        assert_eq!(state.observe_charging(Some(true)), None);
+        assert_eq!(
+            state.observe_charging(Some(false)),
+            Some(ChargingAlert::Stopped)
+        );
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+    }
+
+    #[test]
+    fn charging_alert_is_independent_of_threshold_alerts_and_settings() {
+        let mut state = BatteryAlertState::new(20, 80);
+
+        assert_eq!(state.observe(Some(50)), None);
+        assert_eq!(state.observe_charging(Some(false)), None);
+        assert_eq!(
+            state.observe(Some(80)),
+            Some(BatteryAlert::High {
+                level: 80,
+                threshold: 80,
+            })
+        );
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+        state.set_thresholds(25, 85);
+        assert_eq!(state.observe_charging(Some(true)), None);
+        assert_eq!(
+            state.observe_charging(Some(false)),
+            Some(ChargingAlert::Stopped)
+        );
+        assert_eq!(
+            state.observe_charging(Some(true)),
+            Some(ChargingAlert::Started)
+        );
+    }
+
+    #[test]
+    fn disabled_notifications_do_not_replay_when_enabled() {
+        let mut state = BatteryAlertState::new(20, 80);
+        state.notifications = NotificationPreferences {
+            low_enabled: false,
+            high_enabled: false,
+            charging_started_enabled: false,
+            charging_stopped_enabled: false,
+        };
+        assert_eq!(
+            state.observe_notifications(Some(50), Some(false)),
+            (None, None)
+        );
+        assert_eq!(
+            state.observe_notifications(Some(80), Some(true)),
+            (None, None)
+        );
+        assert_eq!(
+            state.observe_notifications(Some(20), Some(false)),
+            (None, None)
+        );
+        state.notifications = NotificationPreferences::default();
+        assert_eq!(
+            state.observe_notifications(Some(20), Some(false)),
+            (None, None)
+        );
+        assert_eq!(
+            state.observe_notifications(Some(80), Some(true)),
+            (
+                Some(BatteryAlert::High {
+                    level: 80,
+                    threshold: 80
+                }),
+                Some(ChargingAlert::Started)
+            ),
+        );
+    }
+
+    #[test]
+    fn each_notification_can_be_disabled_independently() {
+        for disabled in 0..4 {
+            let mut state = BatteryAlertState::new(20, 80);
+            match disabled {
+                0 => state.notifications.low_enabled = false,
+                1 => state.notifications.high_enabled = false,
+                2 => state.notifications.charging_started_enabled = false,
+                _ => state.notifications.charging_stopped_enabled = false,
+            }
+            state.observe_notifications(Some(50), Some(false));
+            let (high, start) = state.observe_notifications(Some(80), Some(true));
+            assert_eq!(high.is_some(), disabled != 1);
+            assert_eq!(start.is_some(), disabled != 2);
+            let (low, stop) = state.observe_notifications(Some(20), Some(false));
+            assert_eq!(low.is_some(), disabled != 0);
+            assert_eq!(stop.is_some(), disabled != 3);
+        }
+    }
+
+    #[test]
+    fn notification_settings_round_trip_and_migrate_legacy_files() {
+        let mut settings = parse_battery_thresholds("25,85").unwrap();
+        assert_eq!(settings.notifications, NotificationPreferences::default());
+        settings.notifications.low_enabled = false;
+        settings.notifications.charging_stopped_enabled = false;
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert_eq!(parse_battery_thresholds(&saved), Some(settings));
+        let old_json = r#"{"lowThreshold":25,"highThreshold":85}"#;
+        assert_eq!(
+            parse_battery_thresholds(old_json).unwrap().notifications,
+            NotificationPreferences::default()
+        );
+        assert_eq!(
+            parse_battery_thresholds(r#"{"lowThreshold":85,"highThreshold":25}"#),
+            None
+        );
+        assert_eq!(
+            parse_battery_thresholds(
+                r#"{"lowThreshold":25,"highThreshold":85,"lowEnabled":"false"}"#
+            ),
+            None
+        );
+        assert_eq!(parse_battery_thresholds("{"), None);
+    }
+
+    #[test]
+    fn tray_label_reports_charging_only_for_a_current_reading() {
+        let charging = snapshot_from_result(
+            &BatterySnapshot::initial(),
+            Ok(BatteryReading {
+                percentage: 65,
+                charging: true,
+            }),
+        );
+        assert_eq!(tray_label(&charging), "Carregando: 65%");
+        let battery = snapshot_from_result(
+            &charging,
+            Ok(BatteryReading {
+                percentage: 65,
+                charging: false,
+            }),
+        );
+        assert_eq!(tray_label(&battery), "Bateria: 65%");
+        let sleeping = snapshot_from_result(&charging, Err(ReadFailure::Sleeping));
+        assert_eq!(
+            tray_label(&sleeping),
+            "Mouse dormindo · última leitura: 65%"
         );
     }
 
