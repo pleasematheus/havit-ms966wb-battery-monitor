@@ -17,6 +17,8 @@ oficial da Havit, de Python ou de drivers adicionais.
 - opção para iniciar oculto junto com o Windows;
 - instância única: abrir novamente apenas traz a janela existente para frente;
 - notificações nativas com limites inferior e superior ajustáveis, sem alertas repetidos;
+- notificações nativas quando o mouse entra ou sai do modo de carregamento;
+- controles separados para bateria baixa, limite de carga, início e fim do carregamento;
 - atualização automática a cada 60 segundos;
 - atualização manual pelo tray ou pela janela;
 - mantém a última leitura quando o mouse entra em suspensão;
@@ -81,7 +83,8 @@ nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
 ## Ícone alternativo do executável
 
-A opção **Ícone do executável** usa o crate `alt-icons` do crates.io.
+A opção **Ícone do executável** usa o crate `alt-icons` versão `1.2.0` do crates.io,
+tanto no runtime quanto no build, com limpeza automática dos arquivos `.old`.
 O build script declara as variantes e aplica a versão padrão ao próprio `hmbm.exe`.
 No modo automático, ela acompanha estas três faixas:
 
@@ -116,6 +119,27 @@ Para diagnóstico, uma variante também pode ser aplicada sem abrir a interface:
 .\hmbm.exe --set-icon default
 ```
 
+### Testar a limpeza automática
+
+Compile o executável com a dependência publicada:
+
+```powershell
+bun run build --no-bundle
+```
+
+Execute `src-tauri/target/release/hmbm.exe`, escolha um ícone diferente e observe o
+arquivo `hmbm.exe.<pid>-<contador>.old` na mesma pasta. Encerre o aplicativo pela
+opção **Sair** da bandeja: o `.old` deve desaparecer após alguns segundos, sem abrir
+o aplicativo novamente. Fechar apenas a janela mantém o processo na bandeja e o
+arquivo antigo continua em uso. Encerre outra instância já aberta do monitor antes
+de iniciar o executável de testes, pois o aplicativo permite apenas uma instância.
+
+A inicialização existente com `alt_icons::init()` habilita a limpeza por padrão.
+Para testar a preservação, substitua essa chamada por
+`alt_icons::init_with_options(alt_icons::Options { cleanup_old: false })` e
+recompile. O auxiliar usa Windows PowerShell oculto; se a política do sistema o
+bloquear, a próxima inicialização tenta novamente a limpeza.
+
 ## Integração com o Windows
 
 O controle **Iniciar com o Windows** registra o aplicativo para abrir já oculto
@@ -123,14 +147,30 @@ na bandeja. O plugin de instância única impede que o autostart, um atalho ou u
 segunda abertura criem dois monitores simultâneos; nesse caso, a janela da
 instância existente é exibida e recebe foco.
 
-Os alertas de bateria são enviados pelo monitor em segundo plano quando uma leitura
-atual chega a um dos limites escolhidos no slider duplo. Por padrão, o aplicativo
-avisa ao descarregar até 20% e ao carregar até 80%; ambos podem ser ajustados em
-passos de 5%. A preferência é persistida no Windows, inclusive para a inicialização
-oculta. Cada aviso é exibido uma vez por ciclo completo: o superior só é armado
-depois de uma leitura abaixo dele, e cada extremo é rearmado ao alcançar o extremo
-oposto. Leituras antigas mantidas durante a suspensão do mouse não geram
-notificações.
+Use a seção **Notificações** para ativar ou desativar cada tipo de aviso.
+O controle **Bateria baixa** avisa quando a leitura chega ao limite inferior.
+O controle **Limite de carga** avisa quando a leitura chega ao limite superior.
+Os limites padrão são 20% e 80%. Ajuste cada limite em passos de 5%.
+Mantenha o limite inferior abaixo do limite superior.
+
+O monitor salva os limites e os quatro controles neste computador.
+As configurações também se aplicam quando o aplicativo inicia oculto.
+Configurações antigas mantêm os limites e ativam os quatro tipos de aviso.
+Cada alerta de limite ocorre uma vez por ciclo completo. O alerta superior
+precisa de uma leitura abaixo do limite antes do primeiro aviso.
+Cada alerta volta a ficar disponível quando a leitura chega ao limite oposto.
+Ativar um controle não repete eventos que ocorreram com o aviso desativado.
+Os limites apenas geram avisos. Eles não interrompem a carga do mouse.
+
+O controle **Início do carregamento** avisa quando o mouse começa a carregar.
+O controle **Fim do carregamento** avisa quando o mouse volta a usar a bateria.
+Cada aviso ocorre uma vez por mudança de estado. A primeira leitura define
+o estado inicial e não gera um aviso de mudança.
+Leituras indisponíveis mantêm esse estado. Elas não geram avisos.
+Alterar os limites não repete os avisos de carregamento.
+O monitor detecta as mudanças na consulta a cada 60 segundos ou na atualização manual.
+Durante uma leitura atual de carregamento, o menu e o tooltip da bandeja
+exibem **Carregando: N%**. Ao sair desse modo, eles exibem **Bateria: N%**.
 
 No Windows, notificações nativas são associadas corretamente ao aplicativo
 instalado. Durante o desenvolvimento, o sistema pode exibir o nome e o ícone do
