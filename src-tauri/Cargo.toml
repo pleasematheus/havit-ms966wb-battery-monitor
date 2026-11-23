@@ -1,6 +1,6 @@
 [package]
 name = "havit-ms966wb-battery-monitor"
-version = "1.2.2"
+version = "1.2.3"
 description = "Windows battery monitor for the Havit MS966WB wireless mouse"
 edition = "2024"
 license = "MIT"
@@ -30,6 +30,7 @@ tauri-plugin-single-instance = "2.4.5"
 tokio = { version = "1", features = ["sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+editpe = { version = "0.2.4", default-features = false, features = ["std"] }
 windows-sys = { version = "0.60", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }

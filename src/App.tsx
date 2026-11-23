@@ -6,7 +6,7 @@ import {
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart"
 import { BatteryCharging, BellRing, Clock3, Palette, Power, RefreshCw, Usb } from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -196,6 +196,8 @@ function AppLogo({ icon }: { icon: ExecutableIcon }) {
 export function App() {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshFailed, setRefreshFailed] = useState(false)
+  const refreshInFlight = useRef(false)
   const [automaticIcon, setAutomaticIcon] = useState(
     () => window.localStorage.getItem(automaticIconStorageKey) === "true",
   )
@@ -229,11 +231,16 @@ export function App() {
   }, [level])
 
   const refresh = useCallback(async () => {
-    if (!runningInTauri) return
+    if (!runningInTauri || refreshInFlight.current) return
+    refreshInFlight.current = true
     setRefreshing(true)
+    setRefreshFailed(false)
     try {
       setSnapshot(await invoke<BatterySnapshot>("refresh_battery"))
+    } catch {
+      setRefreshFailed(true)
     } finally {
+      refreshInFlight.current = false
       setRefreshing(false)
     }
   }, [runningInTauri])
@@ -328,7 +335,10 @@ export function App() {
 
     if (runningInTauri) {
       void listen<BatterySnapshot>("battery-updated", ({ payload }) => {
-        if (!disposed) setSnapshot(payload)
+        if (!disposed) {
+          setSnapshot(payload)
+          setRefreshFailed(false)
+        }
       }).then((stop) => {
         if (disposed) stop()
         else unlisten = stop
@@ -429,6 +439,7 @@ export function App() {
         level={shownLevel}
         meterClass={meterClass}
         refreshing={refreshing}
+        refreshFailed={refreshFailed}
         canRefresh={runningInTauri}
         onRefresh={() => void refresh()}
       />
@@ -497,6 +508,7 @@ function BatteryCard({
   level,
   meterClass,
   refreshing,
+  refreshFailed,
   canRefresh,
   onRefresh,
 }: {
@@ -504,6 +516,7 @@ function BatteryCard({
   level: number | null
   meterClass: string
   refreshing: boolean
+  refreshFailed: boolean
   canRefresh: boolean
   onRefresh: () => void
 }) {
@@ -554,7 +567,15 @@ function BatteryCard({
             className={cn("h-2", meterClass)}
           />
         )}
-        <p className="min-h-8 text-xs leading-4 text-muted-foreground">{snapshot.message}</p>
+        <p
+          className={cn(
+            "min-h-8 text-xs leading-4",
+            refreshFailed ? "text-destructive" : "text-muted-foreground",
+          )}
+          role={refreshFailed ? "alert" : undefined}
+        >
+          {refreshFailed ? "Não foi possível atualizar a leitura da bateria." : snapshot.message}
+        </p>
         {snapshot.status === "sleeping" && level === null && (
           <Button
             type="button"
