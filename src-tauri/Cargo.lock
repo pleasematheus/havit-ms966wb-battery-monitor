@@ -34,13 +34,16 @@ dependencies = [
 
 [[package]]
 name = "alt-icons"
-version = "1.2.0"
+version = "1.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd867cf46388fc217e790fbadd6418f9f8bccd21ec4755504843c9ebebadf561"
+checksum = "9dc368a776acd4987e31131e510710bd0f3494622543a70d86b516edd6d91999"
 dependencies = [
  "base64 0.22.1",
+ "editpe",
  "embed-resource",
+ "win-custody",
  "windows-sys 0.60.2",
+ "winsafe",
 ]
 
 [[package]]
@@ -696,6 +699,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug-ignore"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffe7ed1d93f4553003e20b629abe9085e1e81b1429520f897f8f8860bc6dfc21"
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -918,6 +927,20 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "editpe"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de488f8727e67269a918bcb5b35b1b9ee59b2ae2859743ffdd6288de9701c5e6"
+dependencies = [
+ "debug-ignore",
+ "foldhash",
+ "indexmap 2.14.2",
+ "log",
+ "thiserror 2.0.20",
+ "zerocopy",
+]
 
 [[package]]
 name = "embed-resource"
@@ -1492,7 +1515,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "havit-ms966wb-battery-monitor"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "alt-icons",
  "hidapi",
@@ -4545,6 +4568,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "win-custody"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9f78c23db90914be58d60cb31a9f4c608cc344f55fc7aa8879937ba308eada3"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5011,6 +5043,12 @@ dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ef0ffc427f045c0cc9ebffd6f4f91153dcd2a1547b5c3c29ee3f541e16e95c6"
 
 [[package]]
 name = "wit-bindgen"
