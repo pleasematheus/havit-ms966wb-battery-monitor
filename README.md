@@ -83,7 +83,7 @@ nos instaladores continua sendo **Havit MS966WB Battery Monitor**.
 
 ## Ícone alternativo do executável
 
-A opção **Ícone do executável** usa o crate `alt-icons` versão `1.2.0` do crates.io,
+A opção **Ícone do executável** usa o crate `alt-icons` versão `1.2.9` do crates.io,
 tanto no runtime quanto no build, com limpeza automática dos arquivos `.old`.
 O build script declara as variantes e aplica a versão padrão ao próprio `hmbm.exe`.
 No modo automático, ela acompanha estas três faixas:

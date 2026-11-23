@@ -2,6 +2,7 @@ use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -90,6 +91,30 @@ impl BatteryStore {
 enum BatteryAlert {
     Low { level: u8, threshold: u8 },
     High { level: u8, threshold: u8 },
+}
+
+impl BatteryAlert {
+    fn notification(self, charging: Option<bool>) -> (&'static str, String) {
+        let (title, level, threshold, advice) = match self {
+            Self::Low { level, threshold } => (
+                "Bateria baixa do Havit MS966WB",
+                level,
+                threshold,
+                (charging == Some(false)).then_some(" Recarregue-o em breve."),
+            ),
+            Self::High { level, threshold } => (
+                "Carga suficiente do Havit MS966WB",
+                level,
+                threshold,
+                (charging == Some(true)).then_some(" Você já pode desconectar o cabo."),
+            ),
+        };
+        let advice = advice.unwrap_or_default();
+        (
+            title,
+            format!("O mouse chegou a {level}% (limite: {threshold}%).{advice}"),
+        )
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -246,6 +271,7 @@ struct TrayItems {
 }
 
 struct ExecutableIconStore {
+    launch_path: std::io::Result<PathBuf>,
     update_lock: tokio::sync::Mutex<()>,
     #[cfg(windows)]
     taskbar_icon: Mutex<Option<isize>>,
@@ -254,6 +280,7 @@ struct ExecutableIconStore {
 impl ExecutableIconStore {
     fn new() -> Self {
         Self {
+            launch_path: std::env::current_exe(),
             update_lock: tokio::sync::Mutex::new(()),
             #[cfg(windows)]
             taskbar_icon: Mutex::new(None),
@@ -566,18 +593,7 @@ fn notify_battery_alert(app: &AppHandle, snapshot: &BatterySnapshot) {
         return;
     };
 
-    let (title, body) = match alert {
-        BatteryAlert::Low { level, threshold } => (
-            "Bateria baixa do Havit MS966WB",
-            format!("O mouse chegou a {level}% (limite: {threshold}%). Recarregue-o em breve."),
-        ),
-        BatteryAlert::High { level, threshold } => (
-            "Carga suficiente do Havit MS966WB",
-            format!(
-                "O mouse chegou a {level}% (limite: {threshold}%). Você já pode desconectar o cabo."
-            ),
-        ),
-    };
+    let (title, body) = alert.notification(snapshot.charging);
 
     show_battery_notification(app, title, &body);
 }
@@ -589,16 +605,25 @@ fn show_battery_notification(app: &AppHandle, title: &str, body: &str) {
 }
 
 fn tray_label(snapshot: &BatterySnapshot) -> String {
-    match (snapshot.percentage, snapshot.last_known_percentage) {
-        (Some(level), _) if snapshot.charging == Some(true) => format!("Carregando: {level}%"),
-        (Some(level), _) => format!("Bateria: {level}%"),
-        (None, Some(level)) => format!("Mouse dormindo · última leitura: {level}%"),
-        (None, None) => match snapshot.status {
-            BatteryStatus::NotFound => "Receptor não encontrado".into(),
-            BatteryStatus::Busy => "Interface HID ocupada".into(),
-            BatteryStatus::Error => "Erro ao ler a bateria".into(),
-            _ => "Bateria indisponível".into(),
-        },
+    if let Some(level) = snapshot.percentage {
+        let label = if snapshot.charging == Some(true) {
+            "Carregando"
+        } else {
+            "Bateria"
+        };
+        return format!("{label}: {level}%");
+    }
+
+    let status = match snapshot.status {
+        BatteryStatus::NotFound => "Receptor não encontrado",
+        BatteryStatus::Busy => "Interface HID ocupada",
+        BatteryStatus::Error => "Erro ao ler a bateria",
+        BatteryStatus::Sleeping if snapshot.last_known_percentage.is_some() => "Mouse dormindo",
+        _ => "Bateria indisponível",
+    };
+    match snapshot.last_known_percentage {
+        Some(level) => format!("{status} · última leitura: {level}%"),
+        None => status.into(),
     }
 }
 
@@ -764,8 +789,40 @@ fn icon_from_variant(variant: &str) -> Option<AppIcon> {
     }
 }
 
-fn set_executable_icon(desired: AppIcon) -> Result<ExecutableIconResult, String> {
-    let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
+#[cfg(windows)]
+fn current_executable_icon(path: &Path) -> Result<Option<String>, String> {
+    use editpe::{Image, ResourceEntry, ResourceEntryName, constants::RT_RCDATA};
+
+    // Read the marker written by alt-icons from the file at the launch path.
+    // A separate --set-icon process can replace that file during this run.
+    let image = Image::parse_file(path)
+        .map_err(|error| format!("não foi possível consultar o ícone do executável: {error}"))?;
+    let data_type = ResourceEntryName::ID(RT_RCDATA.into());
+    let state_name = ResourceEntryName::from_string("ALT_ICONS_STATE");
+    let neutral_language = ResourceEntryName::ID(0);
+    let resource = image
+        .resource_directory()
+        .and_then(|directory| directory.root().get(data_type))
+        .and_then(ResourceEntry::as_table)
+        .and_then(|table| table.get(state_name))
+        .and_then(ResourceEntry::as_table)
+        .and_then(|table| table.get(neutral_language))
+        .and_then(ResourceEntry::as_data);
+    let Some(resource) = resource else {
+        return Ok(None);
+    };
+
+    let name = std::str::from_utf8(resource.data()).map_err(|error| error.to_string())?;
+    Ok(Some(name.to_owned()))
+}
+
+#[cfg(not(windows))]
+fn current_executable_icon(_path: &Path) -> Result<Option<String>, String> {
+    alt_icons::current_icon().map_err(|error| error.to_string())
+}
+
+fn set_executable_icon(path: &Path, desired: AppIcon) -> Result<ExecutableIconResult, String> {
+    let current = current_executable_icon(path)?;
     let desired_name = alt_icons::Icon::name(&desired);
     let already_active = current.as_deref() == Some(desired_name)
         || (current.is_none() && desired == AppIcon::Default);
@@ -890,6 +947,7 @@ fn set_runtime_icon(
 }
 
 fn apply_executable_icon(
+    path: &Path,
     automatic: bool,
     level: Option<u8>,
     variant: String,
@@ -899,14 +957,14 @@ fn apply_executable_icon(
             .ok_or_else(|| format!("variante de ícone desconhecida: {variant}"))?,
         (true, Some(level)) => icon_for_level(level),
         (true, None) => {
-            let current = alt_icons::current_icon().map_err(|error| error.to_string())?;
+            let current = current_executable_icon(path)?;
             return Ok(ExecutableIconResult {
                 icon: current.unwrap_or_else(|| "Default".into()),
                 changed: false,
             });
         }
     };
-    set_executable_icon(desired)
+    set_executable_icon(path, desired)
 }
 
 /// Handles the diagnostic `--set-icon` command before the Tauri runtime starts.
@@ -928,9 +986,12 @@ pub fn handle_icon_cli_command() -> Option<i32> {
         }
     };
 
-    let result = alt_icons::init()
+    let result = std::env::current_exe()
         .map_err(|error| error.to_string())
-        .and_then(|_| set_executable_icon(icon).map(|_| ()));
+        .and_then(|path| {
+            alt_icons::init().map_err(|error| error.to_string())?;
+            set_executable_icon(&path, icon)
+        });
     if let Err(error) = result {
         eprintln!("não foi possível trocar o ícone: {error}");
         return Some(1);
@@ -948,8 +1009,13 @@ async fn set_executable_icon_preference(
     variant: String,
 ) -> Result<ExecutableIconResult, String> {
     let _update_guard = state.update_lock.lock().await;
+    let path = state
+        .launch_path
+        .as_ref()
+        .map_err(|error| error.to_string())?
+        .clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        apply_executable_icon(automatic, level, variant)
+        apply_executable_icon(&path, automatic, level, variant)
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -961,6 +1027,7 @@ async fn set_executable_icon_preference(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let executable_icon_store = ExecutableIconStore::new();
     if let Err(error) = alt_icons::init() {
         eprintln!("não foi possível limpar uma troca anterior de ícone: {error}");
     }
@@ -979,7 +1046,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .manage(BatteryStore::new())
-        .manage(ExecutableIconStore::new())
+        .manage(executable_icon_store)
         .invoke_handler(tauri::generate_handler![
             get_cached_battery,
             refresh_battery,
@@ -1368,6 +1435,53 @@ mod tests {
     }
 
     #[test]
+    fn tray_reports_the_read_failure_alongside_the_last_percentage() {
+        let previous = snapshot_from_result(
+            &BatterySnapshot::initial(),
+            Ok(BatteryReading {
+                percentage: 60,
+                charging: false,
+            }),
+        );
+        for (failure, expected_status) in [
+            (ReadFailure::Sleeping, "Mouse dormindo"),
+            (ReadFailure::NotFound, "Receptor não encontrado"),
+            (ReadFailure::Busy, "Interface HID ocupada"),
+            (
+                ReadFailure::Hid("falha de teste".into()),
+                "Erro ao ler a bateria",
+            ),
+        ] {
+            let snapshot = snapshot_from_result(&previous, Err(failure));
+            assert_eq!(
+                tray_label(&snapshot),
+                format!("{expected_status} · última leitura: 60%")
+            );
+        }
+    }
+
+    #[test]
+    fn battery_notification_advice_matches_the_charging_state() {
+        for charging in [Some(true), Some(false), None] {
+            let (_, high) = BatteryAlert::High {
+                level: 82,
+                threshold: 80,
+            }
+            .notification(charging);
+            let (_, low) = BatteryAlert::Low {
+                level: 18,
+                threshold: 20,
+            }
+            .notification(charging);
+
+            assert!(high.contains("82%"));
+            assert_eq!(high.contains("desconectar o cabo"), charging == Some(true));
+            assert!(low.contains("18%"));
+            assert_eq!(low.contains("Recarregue-o"), charging == Some(false));
+        }
+    }
+
+    #[test]
     fn executable_icon_variants_are_resolved_by_name() {
         assert_eq!(icon_from_variant("default"), Some(AppIcon::Default));
         assert_eq!(icon_from_variant("galactic"), Some(AppIcon::Galactic));
@@ -1399,16 +1513,25 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     #[ignore = "rewrites this test executable's Windows icon"]
     fn swaps_executable_icon_and_restores_the_default() {
+        let executable = std::env::current_exe().expect("the test executable path should be known");
         alt_icons::init().expect("leftovers from an earlier icon swap should be cleaned");
 
-        let warning = apply_executable_icon(true, Some(30), "default".into())
+        const CHILD_FLAG: &str = "HMBM_TEST_SWAP_EXECUTABLE_ICON";
+        if std::env::var(CHILD_FLAG).as_deref() == Ok("1") {
+            alt_icons::set_icon(AppIcon::Mythic)
+                .expect("a separate process should be able to change the executable icon");
+            return;
+        }
+
+        let warning = apply_executable_icon(&executable, true, Some(30), "default".into())
             .expect("the warning icon should be applied to the test executable");
         assert_eq!(warning.icon, "Warning");
         assert_eq!(
-            alt_icons::current_icon().expect("the active icon should be readable"),
+            current_executable_icon(&executable).expect("the active icon should be readable"),
             Some("Warning".into())
         );
 
@@ -1418,20 +1541,47 @@ mod tests {
             ("minimalist", "Minimalist"),
             ("mythic", "Mythic"),
         ] {
-            let applied = apply_executable_icon(false, None, variant.into())
+            let applied = apply_executable_icon(&executable, false, None, variant.into())
                 .expect("the manual icon should be applied to the test executable");
             assert_eq!(applied.icon, expected);
             assert_eq!(
-                alt_icons::current_icon().expect("the manual icon should be readable"),
+                current_executable_icon(&executable).expect("the manual icon should be readable"),
                 Some(expected.into())
             );
         }
 
-        let default = apply_executable_icon(false, None, "default".into())
+        let default = apply_executable_icon(&executable, false, None, "default".into())
             .expect("the default icon should be restored on the test executable");
         assert_eq!(default.icon, "Default");
         assert_eq!(
-            alt_icons::current_icon().expect("the restored icon should be readable"),
+            current_executable_icon(&executable).expect("the restored icon should be readable"),
+            Some("Default".into())
+        );
+
+        let child = std::process::Command::new(&executable)
+            .args([
+                "--exact",
+                "tests::swaps_executable_icon_and_restores_the_default",
+                "--ignored",
+            ])
+            .env(CHILD_FLAG, "1")
+            .output()
+            .expect("the second process should run");
+        assert!(
+            child.status.success(),
+            "the second process failed: {} {}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert_eq!(
+            current_executable_icon(&executable).expect("the icon on disk should be readable"),
+            Some("Mythic".into())
+        );
+        let restored = apply_executable_icon(&executable, false, None, "default".into())
+            .expect("the original process should restore the default icon after an external swap");
+        assert!(restored.changed);
+        assert_eq!(
+            current_executable_icon(&executable).expect("the restored icon should be readable"),
             Some("Default".into())
         );
     }
